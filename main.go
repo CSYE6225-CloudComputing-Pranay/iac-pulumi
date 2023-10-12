@@ -1,11 +1,14 @@
 package main
 
 import (
+	"github.com/c-robinson/iplib"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
+	"net"
 	"strconv"
+	"strings"
 )
 
 func main() {
@@ -16,6 +19,19 @@ func main() {
 		cidrBlock := conf.Require("cidrBlock")
 		vpcName := conf.Require("vpcName")
 		destinationBlock := conf.Require("destinationBlock")
+
+		parts := strings.Split(cidrBlock, "/")
+		ip := parts[0]
+		maskStr := parts[1]
+		mask, _ := strconv.Atoi(maskStr)
+
+		n := iplib.NewNet4(net.ParseIP(ip), mask)
+		subnets, _ := n.Subnet(24)
+
+		subnetStrings := make([]string, len(subnets))
+		for i, subnet := range subnets {
+			subnetStrings[i] = subnet.String()
+		}
 
 		available, err := aws.GetAvailabilityZones(ctx, &aws.GetAvailabilityZonesArgs{
 			State: pulumi.StringRef("available"),
@@ -41,7 +57,7 @@ func main() {
 		for i := 0; i < subnetCount; i++ {
 			publicSubnet, err := ec2.NewSubnet(ctx, "public-subnet- "+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:               vpc.ID(),
-				CidrBlock:           pulumi.String("10.0." + strconv.Itoa(i+1) + ".0/24"),
+				CidrBlock:           pulumi.String(subnetStrings[i]),
 				AvailabilityZone:    pulumi.String(available.Names[i]),
 				MapPublicIpOnLaunch: pulumi.Bool(true),
 				Tags: pulumi.StringMap{
@@ -59,7 +75,7 @@ func main() {
 		for i := 0; i < subnetCount; i++ {
 			privateSubnet, err := ec2.NewSubnet(ctx, "private-subnet- "+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:            vpc.ID(),
-				CidrBlock:        pulumi.String("10.0." + strconv.Itoa(i+4) + ".0/24"),
+				CidrBlock:        pulumi.String(subnetStrings[i+subnetCount]),
 				AvailabilityZone: pulumi.String(available.Names[i]),
 				Tags: pulumi.StringMap{
 					"Name": pulumi.String("private-subnet- " + strconv.Itoa(i+1)),
@@ -115,7 +131,7 @@ func main() {
 		}
 		// Associate the Public Subnets to the Public Route Table.
 		for i, subnet := range publicSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, "publicRouteAssociation-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, "publicRouteTableAssociation-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: publicRouteTable.ID(),
 			})
@@ -126,7 +142,7 @@ func main() {
 
 		// Associate the Private Subnets to the Private Route Table.
 		for i, subnet := range privateSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, "privateRoutTableAssociation-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, "privateRouteTableAssociation-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: privateRouteTable.ID(),
 			})
