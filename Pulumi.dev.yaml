@@ -1,8 +1,13 @@
 config:
   aws:profile: dev
   aws:region: us-east-1
-  projectName: cidr_block
-  stackName: "custom cidr block"
-  vpcName: "my_vpc"
+  vpcName: "my-vpc"
   cidrBlock: 10.0.0.0/16
   destinationBlock: 0.0.0.0/0
+  internetGatewayName: "Internet-Gateway"
+  publicSubnetName: "public-subnet"
+  privateSubnetName: "private-subnet"
+  publicRouteTableName: "public-route-table"
+  privateRouteTableName: "private-route-table"
+  publicRTAName: "publicRTA"
+  privateRTAName: "privateRTA"
