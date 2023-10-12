@@ -1,5 +1,5 @@
 config:
-  aws:profile: demo
+  aws:profile: dev
   aws:region: us-east-1
   vpcName: "my-vpc"
   cidrBlock: 10.0.0.0/16
