@@ -20,6 +20,14 @@ func main() {
 		vpcName := conf.Require("vpcName")
 		destinationBlock := conf.Require("destinationBlock")
 
+		internetGatewayName := conf.Require("internetGatewayName")
+		publicSubnetName := conf.Require("publicSubnetName")
+		privateSubnetName := conf.Require("privateSubnetName")
+		publicRouteTableName := conf.Require("publicRouteTableName")
+		privateRouteTableName := conf.Require("privateRouteTableName")
+		publicRTAName := conf.Require("publicRTAName")
+		privateRTAName := conf.Require("privateRTAName")
+
 		parts := strings.Split(cidrBlock, "/")
 		ip := parts[0]
 		maskStr := parts[1]
@@ -55,13 +63,13 @@ func main() {
 		// Create Public Subnets
 		publicSubnets := make([]*ec2.Subnet, 0, subnetCount)
 		for i := 0; i < subnetCount; i++ {
-			publicSubnet, err := ec2.NewSubnet(ctx, "public-subnet- "+strconv.Itoa(i+1), &ec2.SubnetArgs{
+			publicSubnet, err := ec2.NewSubnet(ctx, publicSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:               vpc.ID(),
 				CidrBlock:           pulumi.String(subnetStrings[i]),
 				AvailabilityZone:    pulumi.String(available.Names[i]),
 				MapPublicIpOnLaunch: pulumi.Bool(true),
 				Tags: pulumi.StringMap{
-					"Name": pulumi.String("public-subnet- " + strconv.Itoa(i+1)),
+					"Name": pulumi.String(publicSubnetName + "-" + strconv.Itoa(i+1)),
 				},
 			})
 			if err != nil {
@@ -73,12 +81,12 @@ func main() {
 		// Create Private Subnets
 		privateSubnets := make([]*ec2.Subnet, 0, subnetCount)
 		for i := 0; i < subnetCount; i++ {
-			privateSubnet, err := ec2.NewSubnet(ctx, "private-subnet- "+strconv.Itoa(i+1), &ec2.SubnetArgs{
+			privateSubnet, err := ec2.NewSubnet(ctx, privateSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:            vpc.ID(),
 				CidrBlock:        pulumi.String(subnetStrings[i+subnetCount]),
 				AvailabilityZone: pulumi.String(available.Names[i]),
 				Tags: pulumi.StringMap{
-					"Name": pulumi.String("private-subnet- " + strconv.Itoa(i+1)),
+					"Name": pulumi.String(privateSubnetName + "-" + strconv.Itoa(i+1)),
 				},
 			})
 			if err != nil {
@@ -88,10 +96,10 @@ func main() {
 		}
 
 		// Create a Internet gateway
-		internetGateway, err := ec2.NewInternetGateway(ctx, "Internet-Gateway", &ec2.InternetGatewayArgs{
+		internetGateway, err := ec2.NewInternetGateway(ctx, internetGatewayName, &ec2.InternetGatewayArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String("Internet-Gateway"),
+				"Name": pulumi.String(internetGatewayName),
 			},
 		})
 		if err != nil {
@@ -99,10 +107,10 @@ func main() {
 		}
 
 		//Create a Public Route Table
-		publicRouteTable, err := ec2.NewRouteTable(ctx, "public-route-table", &ec2.RouteTableArgs{
+		publicRouteTable, err := ec2.NewRouteTable(ctx, publicRouteTableName, &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String("public-route-table"),
+				"Name": pulumi.String(publicRouteTableName),
 			},
 		})
 		if err != nil {
@@ -120,10 +128,10 @@ func main() {
 		}
 
 		// Create a Private Route Table
-		privateRouteTable, err := ec2.NewRouteTable(ctx, "private-route-table", &ec2.RouteTableArgs{
+		privateRouteTable, err := ec2.NewRouteTable(ctx, privateRouteTableName, &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String("private-route-table"),
+				"Name": pulumi.String(privateRouteTableName),
 			},
 		})
 		if err != nil {
@@ -131,7 +139,7 @@ func main() {
 		}
 		// Associate the Public Subnets to the Public Route Table.
 		for i, subnet := range publicSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, "publicRouteTableAssociation-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, publicRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: publicRouteTable.ID(),
 			})
@@ -142,7 +150,7 @@ func main() {
 
 		// Associate the Private Subnets to the Private Route Table.
 		for i, subnet := range privateSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, "privateRouteTableAssociation-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, privateRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: privateRouteTable.ID(),
 			})
