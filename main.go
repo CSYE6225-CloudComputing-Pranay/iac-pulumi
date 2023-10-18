@@ -16,19 +16,23 @@ func main() {
 
 		conf := config.New(ctx, "")
 
-		cidrBlock := conf.Require("cidrBlock")
-		vpcName := conf.Require("vpcName")
-		destinationBlock := conf.Require("destinationBlock")
+		vpcCidr := conf.Require("vpcCidr")
+		ipv4Cidr := conf.Require("ipv4Cidr")
+		ipv6Cidr := conf.Require("ipv6Cidr")
 
-		internetGatewayName := conf.Require("internetGatewayName")
-		publicSubnetName := conf.Require("publicSubnetName")
-		privateSubnetName := conf.Require("privateSubnetName")
-		publicRouteTableName := conf.Require("publicRouteTableName")
-		privateRouteTableName := conf.Require("privateRouteTableName")
-		publicRTAName := conf.Require("publicRTAName")
-		privateRTAName := conf.Require("privateRTAName")
+		sshKeyName := conf.Require("sshKeyName")
+		instanceType := conf.Require("instanceType")
+		rootVolumeSize := conf.RequireInt("rootVolumeSize")
+		rootVolumeType := conf.Require("rootVolumeType")
 
-		parts := strings.Split(cidrBlock, "/")
+		vpcName, internetGatewayName, publicSubnetName, privateSubnetName, publicRouteTableName, privateRouteTableName, publicRTAName, privateRTAName, securityGroupName, ec2InstanceName := getNameTags(conf)
+
+		amiId := conf.Require("amiId")
+
+		var ports []int
+		conf.RequireObject("ports", &ports)
+
+		parts := strings.Split(vpcCidr, "/")
 		ip := parts[0]
 		maskStr := parts[1]
 		mask, _ := strconv.Atoi(maskStr)
@@ -51,7 +55,7 @@ func main() {
 		subnetCount := min(azCount, 3)
 		// Create a VPC
 		vpc, err := ec2.NewVpc(ctx, vpcName, &ec2.VpcArgs{
-			CidrBlock: pulumi.String(cidrBlock),
+			CidrBlock: pulumi.String(vpcCidr),
 			Tags: pulumi.StringMap{
 				"Name": pulumi.String(vpcName),
 			},
@@ -120,7 +124,7 @@ func main() {
 		// Create a Route to the Internet
 		_, err = ec2.NewRoute(ctx, "public-route", &ec2.RouteArgs{
 			RouteTableId:         publicRouteTable.ID(),
-			DestinationCidrBlock: pulumi.String(destinationBlock),
+			DestinationCidrBlock: pulumi.String(ipv4Cidr),
 			GatewayId:            internetGateway.ID(),
 		})
 		if err != nil {
@@ -159,85 +163,44 @@ func main() {
 			}
 		}
 
-		securityGroup, err := ec2.NewSecurityGroup(ctx, "application security group", &ec2.SecurityGroupArgs{
-			VpcId: vpc.ID(),
-			Ingress: ec2.SecurityGroupIngressArray{
-				&ec2.SecurityGroupIngressArgs{
-					Description:    pulumi.String("TLS from VPC for port 22"),
-					FromPort:       pulumi.Int(22),
-					ToPort:         pulumi.Int(22),
-					Protocol:       pulumi.String("tcp"),
-					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
-					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
-				},
-				&ec2.SecurityGroupIngressArgs{
-					Description:    pulumi.String("TLS from VPC for port 80"),
-					FromPort:       pulumi.Int(80),
-					ToPort:         pulumi.Int(80),
-					Protocol:       pulumi.String("tcp"),
-					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
-					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
-				},
-				&ec2.SecurityGroupIngressArgs{
-					Description:    pulumi.String("TLS from VPC for port 443"),
-					FromPort:       pulumi.Int(443),
-					ToPort:         pulumi.Int(443),
-					Protocol:       pulumi.String("tcp"),
-					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
-					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
-				},
-				&ec2.SecurityGroupIngressArgs{
-					Description:    pulumi.String("TLS from VPC for port 8080"),
-					FromPort:       pulumi.Int(8080),
-					ToPort:         pulumi.Int(8080),
-					Protocol:       pulumi.String("tcp"),
-					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
-					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
-				},
+		var securityGroupIngressRules ec2.SecurityGroupIngressArray
+
+		for i := range ports {
+			securityGroupIngressRules = append(securityGroupIngressRules, &ec2.SecurityGroupIngressArgs{
+				Description:    pulumi.String("TLS from VPC for port " + strconv.Itoa(ports[i])),
+				FromPort:       pulumi.Int(ports[i]),
+				ToPort:         pulumi.Int(ports[i]),
+				Protocol:       pulumi.String("tcp"),
+				CidrBlocks:     pulumi.StringArray{pulumi.String(ipv4Cidr)},
+				Ipv6CidrBlocks: pulumi.StringArray{pulumi.String(ipv6Cidr)},
+			})
+		}
+
+		securityGroup, err := ec2.NewSecurityGroup(ctx, securityGroupName, &ec2.SecurityGroupArgs{
+			VpcId:   vpc.ID(),
+			Ingress: securityGroupIngressRules,
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(securityGroupName),
 			},
-			Egress: ec2.SecurityGroupEgressArray{},
 		})
 		if err != nil {
 			return err
 		}
 
-		ami, err := ec2.LookupAmi(ctx, &ec2.LookupAmiArgs{
-			MostRecent: pulumi.BoolRef(true),
-			Filters: []ec2.GetAmiFilter{
-				{
-					Name: "name",
-					Values: []string{
-						"csye6225-debian-instance-ami-*",
-					},
-				},
-				{
-					Name: "virtualization-type",
-					Values: []string{
-						"hvm",
-					},
-				},
-			},
-			Owners: []string{
-				"287328534082",
-			},
-		}, nil)
-		if err != nil {
-			return err
-		}
-		_, err = ec2.NewInstance(ctx, "web", &ec2.InstanceArgs{
+		_, err = ec2.NewInstance(ctx, ec2InstanceName, &ec2.InstanceArgs{
 
-			Ami:                   pulumi.String(ami.Id),
+			Ami:                   pulumi.String(amiId),
 			SubnetId:              publicSubnets[0].ID(),
-			KeyName:               pulumi.String("demo_ssh_key"),
+			KeyName:               pulumi.String(sshKeyName),
 			DisableApiTermination: pulumi.Bool(false),
-			InstanceType:          pulumi.String("t2.micro"),
+			InstanceType:          pulumi.String(instanceType),
 			RootBlockDevice: &ec2.InstanceRootBlockDeviceArgs{
-				VolumeSize: pulumi.Int(25),
-				VolumeType: pulumi.String("gp2"),
+				VolumeSize: pulumi.Int(rootVolumeSize),
+				VolumeType: pulumi.String(rootVolumeType),
 			},
 			VpcSecurityGroupIds: pulumi.StringArray{securityGroup.ID()},
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String("HelloWorld"),
+				"Name": pulumi.String(ec2InstanceName),
 			},
 		})
 		if err != nil {
@@ -246,4 +209,48 @@ func main() {
 
 		return err
 	})
+}
+
+func getNameTags(conf *config.Config) (string, string, string, string, string, string, string, string, string, string) {
+	vpcName, err := conf.Try("vpcName")
+	if err != nil {
+		vpcName = "my-vpc"
+	}
+	internetGatewayName, err := conf.Try("internetGatewayName")
+	if err != nil {
+		internetGatewayName = "Internet-Gateway"
+	}
+	publicSubnetName, err := conf.Try("publicSubnetName")
+	if err != nil {
+		publicSubnetName = "public-subnet"
+	}
+	privateSubnetName, err := conf.Try("privateSubnetName")
+	if err != nil {
+		privateSubnetName = "private-subnet"
+	}
+	publicRouteTableName, err := conf.Try("publicRouteTableName")
+	if err != nil {
+		publicRouteTableName = "public-route-table"
+	}
+	privateRouteTableName, err := conf.Try("privateRouteTableName")
+	if err != nil {
+		privateRouteTableName = "private-route-table"
+	}
+	publicRTAName, err := conf.Try("publicRTAName")
+	if err != nil {
+		publicRTAName = "publicRTA"
+	}
+	privateRTAName, err := conf.Try("privateRTAName")
+	if err != nil {
+		privateRTAName = "privateRTA"
+	}
+	securityGroupName, err := conf.Try("securityGroupName")
+	if err != nil {
+		securityGroupName = "application security group"
+	}
+	ec2InstanceName, err := conf.Try("ec2InstanceName")
+	if err != nil {
+		ec2InstanceName = "assessment application instance"
+	}
+	return vpcName, internetGatewayName, publicSubnetName, privateSubnetName, publicRouteTableName, privateRouteTableName, publicRTAName, privateRTAName, securityGroupName, ec2InstanceName
 }
