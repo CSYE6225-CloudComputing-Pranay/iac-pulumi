@@ -1,13 +1,17 @@
 config:
   aws:profile: demo
   aws:region: us-east-1
-  vpcName: "my-vpc"
-  cidrBlock: 10.0.0.0/16
-  destinationBlock: 0.0.0.0/0
-  internetGatewayName: "Internet-Gateway"
-  publicSubnetName: "public-subnet"
-  privateSubnetName: "private-subnet"
-  publicRouteTableName: "public-route-table"
-  privateRouteTableName: "private-route-table"
-  publicRTAName: "publicRTA"
-  privateRTAName: "privateRTA"
+
+  vpcCidr: 10.0.0.0/16
+  ipv4Cidr: 0.0.0.0/0
+  ipv6Cidr: ::/0
+  amiId: "ami-01e0b37be1b71ae26"
+  sshKeyName: "demo_ssh_key"
+  instanceType: "t2.micro"
+  rootVolumeSize: 25
+  rootVolumeType: "gp2"
+  ports:
+    - 22
+    - 80
+    - 443
+    - 8080
