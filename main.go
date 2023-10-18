@@ -158,6 +158,92 @@ func main() {
 				return err
 			}
 		}
+
+		securityGroup, err := ec2.NewSecurityGroup(ctx, "application security group", &ec2.SecurityGroupArgs{
+			VpcId: vpc.ID(),
+			Ingress: ec2.SecurityGroupIngressArray{
+				&ec2.SecurityGroupIngressArgs{
+					Description:    pulumi.String("TLS from VPC for port 22"),
+					FromPort:       pulumi.Int(22),
+					ToPort:         pulumi.Int(22),
+					Protocol:       pulumi.String("tcp"),
+					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
+					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
+				},
+				&ec2.SecurityGroupIngressArgs{
+					Description:    pulumi.String("TLS from VPC for port 80"),
+					FromPort:       pulumi.Int(80),
+					ToPort:         pulumi.Int(80),
+					Protocol:       pulumi.String("tcp"),
+					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
+					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
+				},
+				&ec2.SecurityGroupIngressArgs{
+					Description:    pulumi.String("TLS from VPC for port 443"),
+					FromPort:       pulumi.Int(443),
+					ToPort:         pulumi.Int(443),
+					Protocol:       pulumi.String("tcp"),
+					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
+					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
+				},
+				&ec2.SecurityGroupIngressArgs{
+					Description:    pulumi.String("TLS from VPC for port 8080"),
+					FromPort:       pulumi.Int(8080),
+					ToPort:         pulumi.Int(8080),
+					Protocol:       pulumi.String("tcp"),
+					CidrBlocks:     pulumi.StringArray{pulumi.String(destinationBlock)},
+					Ipv6CidrBlocks: pulumi.StringArray{pulumi.String("::/0")},
+				},
+			},
+			Egress: ec2.SecurityGroupEgressArray{},
+		})
+		if err != nil {
+			return err
+		}
+
+		ami, err := ec2.LookupAmi(ctx, &ec2.LookupAmiArgs{
+			MostRecent: pulumi.BoolRef(true),
+			Filters: []ec2.GetAmiFilter{
+				{
+					Name: "name",
+					Values: []string{
+						"csye6225-debian-instance-ami-*",
+					},
+				},
+				{
+					Name: "virtualization-type",
+					Values: []string{
+						"hvm",
+					},
+				},
+			},
+			Owners: []string{
+				"287328534082",
+			},
+		}, nil)
+		if err != nil {
+			return err
+		}
+		_, err = ec2.NewInstance(ctx, "web", &ec2.InstanceArgs{
+
+			Ami:                   pulumi.String(ami.Id),
+			SubnetId:              publicSubnets[0].ID(),
+			KeyName:               pulumi.String("demo_ssh_key"),
+			DisableApiTermination: pulumi.Bool(false),
+			InstanceType:          pulumi.String("t2.micro"),
+			RootBlockDevice: &ec2.InstanceRootBlockDeviceArgs{
+				VolumeSize: pulumi.Int(25),
+				VolumeType: pulumi.String("gp2"),
+			},
+			VpcSecurityGroupIds: pulumi.StringArray{securityGroup.ID()},
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String("HelloWorld"),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
 		return err
 	})
 }
