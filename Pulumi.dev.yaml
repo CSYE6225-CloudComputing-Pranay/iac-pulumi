@@ -5,7 +5,7 @@ config:
   vpcCidr: 10.0.0.0/16
   ipv4Cidr: 0.0.0.0/0
   ipv6Cidr: ::/0
-  amiId: "ami-01e0b37be1b71ae26"
+  amiId: ""
   sshKeyName: "demo_ssh_key"
   instanceType: "t2.micro"
   rootVolumeSize: 25

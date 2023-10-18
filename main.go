@@ -11,6 +11,19 @@ import (
 	"strings"
 )
 
+type nameTags struct {
+	vpcName               string
+	internetGatewayName   string
+	publicSubnetName      string
+	privateSubnetName     string
+	publicRouteTableName  string
+	privateRouteTableName string
+	publicRTAName         string
+	privateRTAName        string
+	securityGroupName     string
+	ec2InstanceName       string
+}
+
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
 
@@ -25,7 +38,9 @@ func main() {
 		rootVolumeSize := conf.RequireInt("rootVolumeSize")
 		rootVolumeType := conf.Require("rootVolumeType")
 
-		vpcName, internetGatewayName, publicSubnetName, privateSubnetName, publicRouteTableName, privateRouteTableName, publicRTAName, privateRTAName, securityGroupName, ec2InstanceName := getNameTags(conf)
+		var nameTags nameTags
+
+		getNameTags(conf, &nameTags)
 
 		amiId := conf.Require("amiId")
 
@@ -54,10 +69,10 @@ func main() {
 		azCount := len(available.Names)
 		subnetCount := min(azCount, 3)
 		// Create a VPC
-		vpc, err := ec2.NewVpc(ctx, vpcName, &ec2.VpcArgs{
+		vpc, err := ec2.NewVpc(ctx, nameTags.vpcName, &ec2.VpcArgs{
 			CidrBlock: pulumi.String(vpcCidr),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(vpcName),
+				"Name": pulumi.String(nameTags.vpcName),
 			},
 		})
 		if err != nil {
@@ -67,13 +82,13 @@ func main() {
 		// Create Public Subnets
 		publicSubnets := make([]*ec2.Subnet, 0, subnetCount)
 		for i := 0; i < subnetCount; i++ {
-			publicSubnet, err := ec2.NewSubnet(ctx, publicSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
+			publicSubnet, err := ec2.NewSubnet(ctx, nameTags.publicSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:               vpc.ID(),
 				CidrBlock:           pulumi.String(subnetStrings[i]),
 				AvailabilityZone:    pulumi.String(available.Names[i]),
 				MapPublicIpOnLaunch: pulumi.Bool(true),
 				Tags: pulumi.StringMap{
-					"Name": pulumi.String(publicSubnetName + "-" + strconv.Itoa(i+1)),
+					"Name": pulumi.String(nameTags.publicSubnetName + "-" + strconv.Itoa(i+1)),
 				},
 			})
 			if err != nil {
@@ -85,12 +100,12 @@ func main() {
 		// Create Private Subnets
 		privateSubnets := make([]*ec2.Subnet, 0, subnetCount)
 		for i := 0; i < subnetCount; i++ {
-			privateSubnet, err := ec2.NewSubnet(ctx, privateSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
+			privateSubnet, err := ec2.NewSubnet(ctx, nameTags.privateSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:            vpc.ID(),
 				CidrBlock:        pulumi.String(subnetStrings[i+subnetCount]),
 				AvailabilityZone: pulumi.String(available.Names[i]),
 				Tags: pulumi.StringMap{
-					"Name": pulumi.String(privateSubnetName + "-" + strconv.Itoa(i+1)),
+					"Name": pulumi.String(nameTags.privateSubnetName + "-" + strconv.Itoa(i+1)),
 				},
 			})
 			if err != nil {
@@ -100,10 +115,10 @@ func main() {
 		}
 
 		// Create a Internet gateway
-		internetGateway, err := ec2.NewInternetGateway(ctx, internetGatewayName, &ec2.InternetGatewayArgs{
+		internetGateway, err := ec2.NewInternetGateway(ctx, nameTags.internetGatewayName, &ec2.InternetGatewayArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(internetGatewayName),
+				"Name": pulumi.String(nameTags.internetGatewayName),
 			},
 		})
 		if err != nil {
@@ -111,10 +126,10 @@ func main() {
 		}
 
 		//Create a Public Route Table
-		publicRouteTable, err := ec2.NewRouteTable(ctx, publicRouteTableName, &ec2.RouteTableArgs{
+		publicRouteTable, err := ec2.NewRouteTable(ctx, nameTags.publicRouteTableName, &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(publicRouteTableName),
+				"Name": pulumi.String(nameTags.publicRouteTableName),
 			},
 		})
 		if err != nil {
@@ -132,10 +147,10 @@ func main() {
 		}
 
 		// Create a Private Route Table
-		privateRouteTable, err := ec2.NewRouteTable(ctx, privateRouteTableName, &ec2.RouteTableArgs{
+		privateRouteTable, err := ec2.NewRouteTable(ctx, nameTags.privateRouteTableName, &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(privateRouteTableName),
+				"Name": pulumi.String(nameTags.privateRouteTableName),
 			},
 		})
 		if err != nil {
@@ -143,7 +158,7 @@ func main() {
 		}
 		// Associate the Public Subnets to the Public Route Table.
 		for i, subnet := range publicSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, publicRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, nameTags.publicRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: publicRouteTable.ID(),
 			})
@@ -154,7 +169,7 @@ func main() {
 
 		// Associate the Private Subnets to the Private Route Table.
 		for i, subnet := range privateSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, privateRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, nameTags.privateRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: privateRouteTable.ID(),
 			})
@@ -176,18 +191,18 @@ func main() {
 			})
 		}
 
-		securityGroup, err := ec2.NewSecurityGroup(ctx, securityGroupName, &ec2.SecurityGroupArgs{
+		securityGroup, err := ec2.NewSecurityGroup(ctx, nameTags.securityGroupName, &ec2.SecurityGroupArgs{
 			VpcId:   vpc.ID(),
 			Ingress: securityGroupIngressRules,
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(securityGroupName),
+				"Name": pulumi.String(nameTags.securityGroupName),
 			},
 		})
 		if err != nil {
 			return err
 		}
 
-		_, err = ec2.NewInstance(ctx, ec2InstanceName, &ec2.InstanceArgs{
+		_, err = ec2.NewInstance(ctx, nameTags.ec2InstanceName, &ec2.InstanceArgs{
 
 			Ami:                   pulumi.String(amiId),
 			SubnetId:              publicSubnets[0].ID(),
@@ -200,7 +215,7 @@ func main() {
 			},
 			VpcSecurityGroupIds: pulumi.StringArray{securityGroup.ID()},
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(ec2InstanceName),
+				"Name": pulumi.String(nameTags.ec2InstanceName),
 			},
 		})
 		if err != nil {
@@ -211,7 +226,7 @@ func main() {
 	})
 }
 
-func getNameTags(conf *config.Config) (string, string, string, string, string, string, string, string, string, string) {
+func getNameTags(conf *config.Config, nameTags *nameTags) {
 	vpcName, err := conf.Try("vpcName")
 	if err != nil {
 		vpcName = "my-vpc"
@@ -252,5 +267,15 @@ func getNameTags(conf *config.Config) (string, string, string, string, string, s
 	if err != nil {
 		ec2InstanceName = "assessment application instance"
 	}
-	return vpcName, internetGatewayName, publicSubnetName, privateSubnetName, publicRouteTableName, privateRouteTableName, publicRTAName, privateRTAName, securityGroupName, ec2InstanceName
+	nameTags.vpcName = vpcName
+	nameTags.internetGatewayName = internetGatewayName
+	nameTags.publicSubnetName = publicSubnetName
+	nameTags.privateSubnetName = privateSubnetName
+	nameTags.publicRouteTableName = publicRouteTableName
+	nameTags.privateRouteTableName = privateRouteTableName
+	nameTags.publicRTAName = publicRTAName
+	nameTags.privateRTAName = privateRTAName
+	nameTags.securityGroupName = securityGroupName
+	nameTags.ec2InstanceName = ec2InstanceName
+	return
 }
