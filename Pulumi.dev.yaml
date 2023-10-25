@@ -10,6 +10,15 @@ config:
   instanceType: "t2.micro"
   rootVolumeSize: 25
   rootVolumeType: "gp2"
+  db_family: mariadb10.11
+  db_storage_size: 20
+  db_engine: mariadb
+  db_engine_version: 10.11.5
+  db_instance_class: db.t3.micro
+  db_name: cloud
+  db_master_user: csye6225
+  db_master_password: password
+  db_version: 10.11.5
   ports:
     - 22
     - 80
