@@ -1,15 +1,34 @@
 package main
 
 import (
+	"fmt"
 	"github.com/c-robinson/iplib"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/rds"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
 	"net"
 	"strconv"
 	"strings"
 )
+
+type nameTags struct {
+	vpcName                    string
+	internetGatewayName        string
+	publicSubnetName           string
+	privateSubnetName          string
+	publicRouteTableName       string
+	privateRouteTableName      string
+	publicRTAName              string
+	privateRTAName             string
+	securityGroupName          string
+	databaseSecurityGroupName  string
+	databaseSubnetGroupName    string
+	databaseParameterGroupName string
+	databaseInstanceName       string
+	applicationInstanceName    string
+}
 
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
@@ -25,7 +44,32 @@ func main() {
 		rootVolumeSize := conf.RequireInt("rootVolumeSize")
 		rootVolumeType := conf.Require("rootVolumeType")
 
-		vpcName, internetGatewayName, publicSubnetName, privateSubnetName, publicRouteTableName, privateRouteTableName, publicRTAName, privateRTAName, securityGroupName, ec2InstanceName := getNameTags(conf)
+		//Fetching Database Configuration
+		dbConf := config.New(ctx, "database")
+
+		dbFamily := dbConf.Require("family")
+		dbStorageSize := dbConf.RequireInt("storageSize")
+		dbEngine := dbConf.Require("engine")
+		dbEngineVersion := dbConf.Require("engineVersion")
+		dbInstanceClass := dbConf.Require("instanceClass")
+		dbName := dbConf.Require("name")
+		dbMasterUser := dbConf.Require("masterUser")
+		dbMasterPassword := dbConf.Require("masterPassword")
+		dbPort := dbConf.RequireInt("port")
+
+		//Fetching Application Configuration
+		appConf := config.New(ctx, "application")
+
+		appUser := appConf.Require("user")
+		appUserGroup := appConf.Require("userGroup")
+		appPort := appConf.RequireInt("port")
+		appResourceFile := appConf.Require("resourceFile")
+		appPropertyFile := appConf.Require("propertyFile")
+		appBinaryFile := appConf.Require("binaryFile")
+
+		var nameTags nameTags
+
+		getNameTags(conf, &nameTags)
 
 		amiId := conf.Require("amiId")
 
@@ -54,10 +98,10 @@ func main() {
 		azCount := len(available.Names)
 		subnetCount := min(azCount, 3)
 		// Create a VPC
-		vpc, err := ec2.NewVpc(ctx, vpcName, &ec2.VpcArgs{
+		vpc, err := ec2.NewVpc(ctx, nameTags.vpcName, &ec2.VpcArgs{
 			CidrBlock: pulumi.String(vpcCidr),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(vpcName),
+				"Name": pulumi.String(nameTags.vpcName),
 			},
 		})
 		if err != nil {
@@ -67,13 +111,13 @@ func main() {
 		// Create Public Subnets
 		publicSubnets := make([]*ec2.Subnet, 0, subnetCount)
 		for i := 0; i < subnetCount; i++ {
-			publicSubnet, err := ec2.NewSubnet(ctx, publicSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
+			publicSubnet, err := ec2.NewSubnet(ctx, nameTags.publicSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:               vpc.ID(),
 				CidrBlock:           pulumi.String(subnetStrings[i]),
 				AvailabilityZone:    pulumi.String(available.Names[i]),
 				MapPublicIpOnLaunch: pulumi.Bool(true),
 				Tags: pulumi.StringMap{
-					"Name": pulumi.String(publicSubnetName + "-" + strconv.Itoa(i+1)),
+					"Name": pulumi.String(nameTags.publicSubnetName + "-" + strconv.Itoa(i+1)),
 				},
 			})
 			if err != nil {
@@ -85,12 +129,12 @@ func main() {
 		// Create Private Subnets
 		privateSubnets := make([]*ec2.Subnet, 0, subnetCount)
 		for i := 0; i < subnetCount; i++ {
-			privateSubnet, err := ec2.NewSubnet(ctx, privateSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
+			privateSubnet, err := ec2.NewSubnet(ctx, nameTags.privateSubnetName+"-"+strconv.Itoa(i+1), &ec2.SubnetArgs{
 				VpcId:            vpc.ID(),
 				CidrBlock:        pulumi.String(subnetStrings[i+subnetCount]),
 				AvailabilityZone: pulumi.String(available.Names[i]),
 				Tags: pulumi.StringMap{
-					"Name": pulumi.String(privateSubnetName + "-" + strconv.Itoa(i+1)),
+					"Name": pulumi.String(nameTags.privateSubnetName + "-" + strconv.Itoa(i+1)),
 				},
 			})
 			if err != nil {
@@ -100,10 +144,10 @@ func main() {
 		}
 
 		// Create a Internet gateway
-		internetGateway, err := ec2.NewInternetGateway(ctx, internetGatewayName, &ec2.InternetGatewayArgs{
+		internetGateway, err := ec2.NewInternetGateway(ctx, nameTags.internetGatewayName, &ec2.InternetGatewayArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(internetGatewayName),
+				"Name": pulumi.String(nameTags.internetGatewayName),
 			},
 		})
 		if err != nil {
@@ -111,10 +155,10 @@ func main() {
 		}
 
 		//Create a Public Route Table
-		publicRouteTable, err := ec2.NewRouteTable(ctx, publicRouteTableName, &ec2.RouteTableArgs{
+		publicRouteTable, err := ec2.NewRouteTable(ctx, nameTags.publicRouteTableName, &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(publicRouteTableName),
+				"Name": pulumi.String(nameTags.publicRouteTableName),
 			},
 		})
 		if err != nil {
@@ -132,10 +176,10 @@ func main() {
 		}
 
 		// Create a Private Route Table
-		privateRouteTable, err := ec2.NewRouteTable(ctx, privateRouteTableName, &ec2.RouteTableArgs{
+		privateRouteTable, err := ec2.NewRouteTable(ctx, nameTags.privateRouteTableName, &ec2.RouteTableArgs{
 			VpcId: vpc.ID(),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(privateRouteTableName),
+				"Name": pulumi.String(nameTags.privateRouteTableName),
 			},
 		})
 		if err != nil {
@@ -143,7 +187,7 @@ func main() {
 		}
 		// Associate the Public Subnets to the Public Route Table.
 		for i, subnet := range publicSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, publicRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, nameTags.publicRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: publicRouteTable.ID(),
 			})
@@ -154,7 +198,7 @@ func main() {
 
 		// Associate the Private Subnets to the Private Route Table.
 		for i, subnet := range privateSubnets {
-			_, err := ec2.NewRouteTableAssociation(ctx, privateRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
+			_, err := ec2.NewRouteTableAssociation(ctx, nameTags.privateRTAName+"-"+strconv.Itoa(i+1), &ec2.RouteTableAssociationArgs{
 				SubnetId:     subnet.ID(),
 				RouteTableId: privateRouteTable.ID(),
 			})
@@ -163,6 +207,7 @@ func main() {
 			}
 		}
 
+		// Create ingress rules for the application security group
 		var securityGroupIngressRules ec2.SecurityGroupIngressArray
 
 		for i := range ports {
@@ -176,18 +221,120 @@ func main() {
 			})
 		}
 
-		securityGroup, err := ec2.NewSecurityGroup(ctx, securityGroupName, &ec2.SecurityGroupArgs{
+		// Create application security group
+		securityGroup, err := ec2.NewSecurityGroup(ctx, nameTags.securityGroupName, &ec2.SecurityGroupArgs{
 			VpcId:   vpc.ID(),
 			Ingress: securityGroupIngressRules,
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(securityGroupName),
+				"Name": pulumi.String(nameTags.securityGroupName),
 			},
 		})
 		if err != nil {
 			return err
 		}
 
-		_, err = ec2.NewInstance(ctx, ec2InstanceName, &ec2.InstanceArgs{
+		// Create database security group
+		databaseSecurityGroup, err := ec2.NewSecurityGroup(ctx, nameTags.databaseSecurityGroupName, &ec2.SecurityGroupArgs{
+			VpcId: vpc.ID(),
+			Ingress: ec2.SecurityGroupIngressArray{
+				&ec2.SecurityGroupIngressArgs{
+					SecurityGroups: pulumi.StringArray{
+						securityGroup.ID(),
+					},
+					Protocol: pulumi.String("tcp"),
+					FromPort: pulumi.Int(3306),
+					ToPort:   pulumi.Int(3306),
+				},
+			},
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.databaseSecurityGroupName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create egress rule for application security group to access database
+		_, err = ec2.NewSecurityGroupRule(ctx, "application-security-group-egress-rule", &ec2.SecurityGroupRuleArgs{
+			Type:                  pulumi.String("egress"),
+			FromPort:              pulumi.Int(3306),
+			ToPort:                pulumi.Int(3306),
+			Protocol:              pulumi.String("tcp"),
+			SecurityGroupId:       securityGroup.ID(),
+			SourceSecurityGroupId: databaseSecurityGroup.ID(),
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a string array to store the subnet ids for the db subnet group
+		var subnetIds pulumi.StringArray
+		for i := range privateSubnets {
+			subnetIds = append(subnetIds, privateSubnets[i].ID())
+		}
+
+		// Create a database subnet group
+		databaseSubnetGroup, err := rds.NewSubnetGroup(ctx, nameTags.databaseSubnetGroupName, &rds.SubnetGroupArgs{
+			SubnetIds: subnetIds,
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.databaseSubnetGroupName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a database parameter group
+		databaseParameterGroup, err := rds.NewParameterGroup(ctx, nameTags.databaseParameterGroupName, &rds.ParameterGroupArgs{
+			Family: pulumi.String(dbFamily),
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.databaseParameterGroupName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a database instance
+		databaseInstance, err := rds.NewInstance(ctx, nameTags.databaseInstanceName, &rds.InstanceArgs{
+			AllocatedStorage:    pulumi.Int(dbStorageSize),
+			Engine:              pulumi.String(dbEngine),
+			EngineVersion:       pulumi.String(dbEngineVersion),
+			InstanceClass:       pulumi.String(dbInstanceClass),
+			DbName:              pulumi.String(dbName),
+			Username:            pulumi.String(dbMasterUser),
+			Password:            pulumi.String(dbMasterPassword),
+			MultiAz:             pulumi.Bool(false),
+			PubliclyAccessible:  pulumi.Bool(false),
+			DbSubnetGroupName:   databaseSubnetGroup.Name,
+			ParameterGroupName:  databaseParameterGroup.Name,
+			VpcSecurityGroupIds: pulumi.StringArray{databaseSecurityGroup.ID()},
+			SkipFinalSnapshot:   pulumi.Bool(true),
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.databaseInstanceName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		userData := fmt.Sprintf(`#!/bin/bash
+{
+	echo "DB_HOST=${DB_HOST}"
+	echo "DB_PORT=%d"
+	echo "DB_USER=%s"
+	echo "DB_PASSWORD=%s"
+	echo "DB_NAME=%s"
+	echo "PORT=%d"
+	echo "FILE_PATH=%s"
+} >> %s
+sudo chown %s:%s %s
+sudo chown %s:%s %s
+sudo chown %s:%s %s
+sudo chmod 640 %s
+`, dbPort, dbMasterUser, dbMasterPassword, dbName, appPort, appResourceFile, appPropertyFile, appUser, appUserGroup, appPropertyFile, appUser, appUserGroup, appBinaryFile, appUser, appUserGroup, appResourceFile, appPropertyFile)
+
+		_, err = ec2.NewInstance(ctx, nameTags.applicationInstanceName, &ec2.InstanceArgs{
 
 			Ami:                   pulumi.String(amiId),
 			SubnetId:              publicSubnets[0].ID(),
@@ -199,19 +346,29 @@ func main() {
 				VolumeType: pulumi.String(rootVolumeType),
 			},
 			VpcSecurityGroupIds: pulumi.StringArray{securityGroup.ID()},
+			UserData: databaseInstance.Address.ApplyT(
+				func(args interface{}) (string, error) {
+					endpoint := args.(string)
+					userData = strings.Replace(userData, "${DB_HOST}", endpoint, -1)
+					return userData, nil
+				},
+			).(pulumi.StringOutput),
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(ec2InstanceName),
+				"Name": pulumi.String(nameTags.applicationInstanceName),
 			},
-		})
+		},
+			pulumi.DependsOn([]pulumi.Resource{databaseInstance}))
 		if err != nil {
 			return err
 		}
+
+		ctx.Export("Database Endpoint", databaseInstance.Endpoint)
 
 		return err
 	})
 }
 
-func getNameTags(conf *config.Config) (string, string, string, string, string, string, string, string, string, string) {
+func getNameTags(conf *config.Config, nameTags *nameTags) {
 	vpcName, err := conf.Try("vpcName")
 	if err != nil {
 		vpcName = "my-vpc"
@@ -246,11 +403,41 @@ func getNameTags(conf *config.Config) (string, string, string, string, string, s
 	}
 	securityGroupName, err := conf.Try("securityGroupName")
 	if err != nil {
-		securityGroupName = "application security group"
+		securityGroupName = "application-security-group"
 	}
-	ec2InstanceName, err := conf.Try("ec2InstanceName")
+	databaseSecurityGroupName, err := conf.Try("databaseSecurityGroupName")
 	if err != nil {
-		ec2InstanceName = "assessment application instance"
+		databaseSecurityGroupName = "database-security-group"
 	}
-	return vpcName, internetGatewayName, publicSubnetName, privateSubnetName, publicRouteTableName, privateRouteTableName, publicRTAName, privateRTAName, securityGroupName, ec2InstanceName
+	databaseSubnetGroupName, err := conf.Try("databaseSubnetGroupName")
+	if err != nil {
+		databaseSubnetGroupName = "database-subnet-group"
+	}
+	databaseParameterGroupName, err := conf.Try("databaseParameterGroupName")
+	if err != nil {
+		databaseParameterGroupName = "database-parameter-group"
+	}
+	databaseInstanceName, err := conf.Try("databaseInstanceName")
+	if err != nil {
+		databaseInstanceName = "assessment-application-database"
+	}
+	applicationInstanceName, err := conf.Try("applicationInstanceName")
+	if err != nil {
+		applicationInstanceName = "assessment-application-instance"
+	}
+	nameTags.vpcName = vpcName
+	nameTags.internetGatewayName = internetGatewayName
+	nameTags.publicSubnetName = publicSubnetName
+	nameTags.privateSubnetName = privateSubnetName
+	nameTags.publicRouteTableName = publicRouteTableName
+	nameTags.privateRouteTableName = privateRouteTableName
+	nameTags.publicRTAName = publicRTAName
+	nameTags.privateRTAName = privateRTAName
+	nameTags.securityGroupName = securityGroupName
+	nameTags.databaseSecurityGroupName = databaseSecurityGroupName
+	nameTags.databaseSubnetGroupName = databaseSubnetGroupName
+	nameTags.databaseParameterGroupName = databaseParameterGroupName
+	nameTags.databaseInstanceName = databaseInstanceName
+	nameTags.applicationInstanceName = applicationInstanceName
+	return
 }
