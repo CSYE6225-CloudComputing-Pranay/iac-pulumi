@@ -44,14 +44,28 @@ func main() {
 		rootVolumeSize := conf.RequireInt("rootVolumeSize")
 		rootVolumeType := conf.Require("rootVolumeType")
 
-		dbFamily := conf.Require("db_family")
-		dbStorageSize := conf.RequireInt("db_storage_size")
-		dbEngine := conf.Require("db_engine")
-		dbEngineVersion := conf.Require("db_engine_version")
-		dbInstanceClass := conf.Require("db_instance_class")
-		dbName := conf.Require("db_name")
-		dbMasterUser := conf.Require("db_master_user")
-		dbMasterPassword := conf.Require("db_master_password")
+		//Fetching Database Configuration
+		dbConf := config.New(ctx, "database")
+
+		dbFamily := dbConf.Require("family")
+		dbStorageSize := dbConf.RequireInt("storageSize")
+		dbEngine := dbConf.Require("engine")
+		dbEngineVersion := dbConf.Require("engineVersion")
+		dbInstanceClass := dbConf.Require("instanceClass")
+		dbName := dbConf.Require("name")
+		dbMasterUser := dbConf.Require("masterUser")
+		dbMasterPassword := dbConf.Require("masterPassword")
+		dbPort := dbConf.RequireInt("port")
+
+		//Fetching Application Configuration
+		appConf := config.New(ctx, "application")
+
+		appUser := appConf.Require("user")
+		appUserGroup := appConf.Require("userGroup")
+		appPort := appConf.RequireInt("port")
+		appResourceFile := appConf.Require("resourceFile")
+		appPropertyFile := appConf.Require("propertyFile")
+		appBinaryFile := appConf.Require("binaryFile")
 
 		var nameTags nameTags
 
@@ -193,6 +207,7 @@ func main() {
 			}
 		}
 
+		// Create ingress rules for the application security group
 		var securityGroupIngressRules ec2.SecurityGroupIngressArray
 
 		for i := range ports {
@@ -206,6 +221,7 @@ func main() {
 			})
 		}
 
+		// Create application security group
 		securityGroup, err := ec2.NewSecurityGroup(ctx, nameTags.securityGroupName, &ec2.SecurityGroupArgs{
 			VpcId:   vpc.ID(),
 			Ingress: securityGroupIngressRules,
@@ -217,6 +233,7 @@ func main() {
 			return err
 		}
 
+		// Create database security group
 		databaseSecurityGroup, err := ec2.NewSecurityGroup(ctx, nameTags.databaseSecurityGroupName, &ec2.SecurityGroupArgs{
 			VpcId: vpc.ID(),
 			Ingress: ec2.SecurityGroupIngressArray{
@@ -237,6 +254,7 @@ func main() {
 			return err
 		}
 
+		// Create egress rule for application security group to access database
 		_, err = ec2.NewSecurityGroupRule(ctx, "application-security-group-egress-rule", &ec2.SecurityGroupRuleArgs{
 			Type:                  pulumi.String("egress"),
 			FromPort:              pulumi.Int(3306),
@@ -249,12 +267,13 @@ func main() {
 			return err
 		}
 
-		// create a string array to store the subnet ids for the db subnet group
+		// Create a string array to store the subnet ids for the db subnet group
 		var subnetIds pulumi.StringArray
 		for i := range privateSubnets {
 			subnetIds = append(subnetIds, privateSubnets[i].ID())
 		}
 
+		// Create a database subnet group
 		databaseSubnetGroup, err := rds.NewSubnetGroup(ctx, nameTags.databaseSubnetGroupName, &rds.SubnetGroupArgs{
 			SubnetIds: subnetIds,
 			Tags: pulumi.StringMap{
@@ -265,6 +284,7 @@ func main() {
 			return err
 		}
 
+		// Create a database parameter group
 		databaseParameterGroup, err := rds.NewParameterGroup(ctx, nameTags.databaseParameterGroupName, &rds.ParameterGroupArgs{
 			Family: pulumi.String(dbFamily),
 			Tags: pulumi.StringMap{
@@ -275,6 +295,7 @@ func main() {
 			return err
 		}
 
+		// Create a database instance
 		databaseInstance, err := rds.NewInstance(ctx, nameTags.databaseInstanceName, &rds.InstanceArgs{
 			AllocatedStorage:    pulumi.Int(dbStorageSize),
 			Engine:              pulumi.String(dbEngine),
@@ -306,12 +327,12 @@ func main() {
 	echo "DB_NAME=%s"
 	echo "PORT=%d"
 	echo "FILE_PATH=%s"
-} >> /opt/app/.env
-sudo chown webapp:csye6225 /opt/app/.env
-sudo chown webapp:csye6225 /opt/app/assessment-application
-sudo chown webapp:csye6225 /opt/users.csv
-sudo chmod 640 /opt/app/.env
-`, 3306, dbMasterUser, dbMasterPassword, dbName, 8080, "/opt/users.csv")
+} >> %s
+sudo chown %s:%s %s
+sudo chown %s:%s %s
+sudo chown %s:%s %s
+sudo chmod 640 %s
+`, dbPort, dbMasterUser, dbMasterPassword, dbName, appPort, appResourceFile, appPropertyFile, appUser, appUserGroup, appPropertyFile, appUser, appUserGroup, appBinaryFile, appUser, appUserGroup, appResourceFile, appPropertyFile)
 
 		_, err = ec2.NewInstance(ctx, nameTags.applicationInstanceName, &ec2.InstanceArgs{
 
@@ -341,7 +362,7 @@ sudo chmod 640 /opt/app/.env
 			return err
 		}
 
-		ctx.Export("DB Endpoint", databaseInstance.Endpoint)
+		ctx.Export("Database Endpoint", databaseInstance.Endpoint)
 
 		return err
 	})

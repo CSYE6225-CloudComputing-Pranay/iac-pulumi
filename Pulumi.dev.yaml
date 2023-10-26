@@ -5,22 +5,33 @@ config:
   vpcCidr: 10.0.0.0/16
   ipv4Cidr: 0.0.0.0/0
   ipv6Cidr: ::/0
-  amiId: ""
+  amiId: "ami-0e52e08f3c8f8b22b"
   sshKeyName: "demo_ssh_key"
   instanceType: "t2.micro"
   rootVolumeSize: 25
   rootVolumeType: "gp2"
-  db_family: mariadb10.11
-  db_storage_size: 20
-  db_engine: mariadb
-  db_engine_version: 10.11.5
-  db_instance_class: db.t3.micro
-  db_name: cloud
-  db_master_user: csye6225
-  db_master_password: password
-  db_version: 10.11.5
   ports:
     - 22
     - 80
     - 443
     - 8080
+
+  # Application properties
+  application:user: webapp
+  application:userGroup: csye6225
+  application:port: 8080
+  application:resourceFile: /opt/users.csv
+  application:propertyFile: /opt/app/.env
+  application:binaryFile: /opt/app/assessment-application
+
+  # Database properties
+  database:family: mariadb10.11
+  database:storageSize: 20
+  database:engine: mariadb
+  database:engineVersion: 10.11.5
+  database:instanceClass: db.t3.micro
+  database:name: cloud
+  database:masterUser: csye6225
+  database:masterPassword: YH11X9S92f364UJsbzuW
+  database:port: 3306
+  database:version: 10.11.5
