@@ -5,7 +5,7 @@ config:
   vpcCidr: 10.0.0.0/16
   ipv4Cidr: 0.0.0.0/0
   ipv6Cidr: ::/0
-  amiId: "ami-0e52e08f3c8f8b22b"
+  amiId: "ami-085316982fafbdab9"
   sshKeyName: "demo_ssh_key"
   instanceType: "t2.micro"
   rootVolumeSize: 25
@@ -21,8 +21,11 @@ config:
   application:userGroup: csye6225
   application:port: 8080
   application:resourceFile: /opt/users.csv
+  application:logFile: /var/log/webapp/assessment-application.log
+  application:cloudwatchConfigFile: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
   application:propertyFile: /opt/app/.env
   application:binaryFile: /opt/app/assessment-application
+  application:domainName: pranaykasavaraju.me
 
   # Database properties
   database:family: mariadb10.11
