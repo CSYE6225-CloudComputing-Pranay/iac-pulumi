@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/c-robinson/iplib"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/iam"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/rds"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/route53"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
 	"net"
@@ -14,20 +17,26 @@ import (
 )
 
 type nameTags struct {
-	vpcName                    string
-	internetGatewayName        string
-	publicSubnetName           string
-	privateSubnetName          string
-	publicRouteTableName       string
-	privateRouteTableName      string
-	publicRTAName              string
-	privateRTAName             string
-	securityGroupName          string
-	databaseSecurityGroupName  string
-	databaseSubnetGroupName    string
-	databaseParameterGroupName string
-	databaseInstanceName       string
-	applicationInstanceName    string
+	vpcName                         string
+	internetGatewayName             string
+	publicSubnetName                string
+	privateSubnetName               string
+	publicRouteTableName            string
+	privateRouteTableName           string
+	publicRTAName                   string
+	privateRTAName                  string
+	securityGroupName               string
+	databaseSecurityGroupName       string
+	databaseSubnetGroupName         string
+	databaseParameterGroupName      string
+	databaseInstanceName            string
+	applicationInstanceName         string
+	cloudwatchAgentRoleName         string
+	cloudwatchInstanceProfileName   string
+	cloudwatchAgentPolicyName       string
+	applicationInstanceRecordName   string
+	applicationDatabaseEgressName   string
+	applicationCloudwatchEgressName string
 }
 
 func main() {
@@ -43,6 +52,11 @@ func main() {
 		instanceType := conf.Require("instanceType")
 		rootVolumeSize := conf.RequireInt("rootVolumeSize")
 		rootVolumeType := conf.Require("rootVolumeType")
+
+		//Fetching AWS Configuration
+		awsConf := config.New(ctx, "aws")
+
+		awsProfile := awsConf.Require("profile")
 
 		//Fetching Database Configuration
 		dbConf := config.New(ctx, "database")
@@ -65,7 +79,10 @@ func main() {
 		appPort := appConf.RequireInt("port")
 		appResourceFile := appConf.Require("resourceFile")
 		appPropertyFile := appConf.Require("propertyFile")
+		appLogFile := appConf.Require("logFile")
+		appCloudwatchConfigFile := appConf.Require("cloudwatchConfigFile")
 		appBinaryFile := appConf.Require("binaryFile")
+		appDomainName := awsProfile + "." + appConf.Require("domainName")
 
 		var nameTags nameTags
 
@@ -242,8 +259,8 @@ func main() {
 						securityGroup.ID(),
 					},
 					Protocol: pulumi.String("tcp"),
-					FromPort: pulumi.Int(3306),
-					ToPort:   pulumi.Int(3306),
+					FromPort: pulumi.Int(dbPort),
+					ToPort:   pulumi.Int(dbPort),
 				},
 			},
 			Tags: pulumi.StringMap{
@@ -255,13 +272,26 @@ func main() {
 		}
 
 		// Create egress rule for application security group to access database
-		_, err = ec2.NewSecurityGroupRule(ctx, "application-security-group-egress-rule", &ec2.SecurityGroupRuleArgs{
+		_, err = ec2.NewSecurityGroupRule(ctx, nameTags.applicationDatabaseEgressName, &ec2.SecurityGroupRuleArgs{
 			Type:                  pulumi.String("egress"),
-			FromPort:              pulumi.Int(3306),
-			ToPort:                pulumi.Int(3306),
+			FromPort:              pulumi.Int(dbPort),
+			ToPort:                pulumi.Int(dbPort),
 			Protocol:              pulumi.String("tcp"),
 			SecurityGroupId:       securityGroup.ID(),
 			SourceSecurityGroupId: databaseSecurityGroup.ID(),
+		})
+		if err != nil {
+			return err
+		}
+		// Create egress rule for application security group to access database
+		_, err = ec2.NewSecurityGroupRule(ctx, nameTags.applicationCloudwatchEgressName, &ec2.SecurityGroupRuleArgs{
+			Type:            pulumi.String("egress"),
+			FromPort:        pulumi.Int(443),
+			ToPort:          pulumi.Int(443),
+			Protocol:        pulumi.String("tcp"),
+			SecurityGroupId: securityGroup.ID(),
+			CidrBlocks:      pulumi.StringArray{pulumi.String(ipv4Cidr)},
+			Ipv6CidrBlocks:  pulumi.StringArray{pulumi.String(ipv6Cidr)},
 		})
 		if err != nil {
 			return err
@@ -327,14 +357,72 @@ func main() {
 	echo "DB_NAME=%s"
 	echo "PORT=%d"
 	echo "FILE_PATH=%s"
+	echo "LOG_FILE_PATH=%s"
 } >> %s
 sudo chown %s:%s %s
 sudo chown %s:%s %s
 sudo chown %s:%s %s
 sudo chmod 640 %s
-`, dbPort, dbMasterUser, dbMasterPassword, dbName, appPort, appResourceFile, appPropertyFile, appUser, appUserGroup, appPropertyFile, appUser, appUserGroup, appBinaryFile, appUser, appUserGroup, appResourceFile, appPropertyFile)
+{
+	sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+		-a fetch-config \
+		-m ec2 \
+		-c file:%s \
+		-s
+}
+`, dbPort, dbMasterUser, dbMasterPassword, dbName, appPort, appResourceFile, appLogFile, appPropertyFile, appUser, appUserGroup, appPropertyFile, appUser, appUserGroup, appBinaryFile, appUser, appUserGroup, appResourceFile, appPropertyFile, appCloudwatchConfigFile)
 
-		_, err = ec2.NewInstance(ctx, nameTags.applicationInstanceName, &ec2.InstanceArgs{
+		// Create a Default Role Policy
+		policyString, err := json.Marshal(map[string]interface{}{
+			"Version": "2012-10-17",
+			"Statement": []map[string]interface{}{
+				map[string]interface{}{
+					"Action": "sts:AssumeRole",
+					"Effect": "Allow",
+					"Sid":    "",
+					"Principal": map[string]interface{}{
+						"Service": "ec2.amazonaws.com",
+					},
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		defaultPolicy := string(policyString)
+
+		// Create a new Role for the cloudwatch agent
+		role, err := iam.NewRole(ctx, nameTags.cloudwatchAgentRoleName, &iam.RoleArgs{
+			AssumeRolePolicy: pulumi.String(defaultPolicy),
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.cloudwatchAgentRoleName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a new IAM instance profile with cloudwatch agent role.
+		instanceProfile, err := iam.NewInstanceProfile(ctx, nameTags.cloudwatchInstanceProfileName, &iam.InstanceProfileArgs{
+			Role: role.Name,
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.cloudwatchInstanceProfileName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Attach the cloud watch agent policy to the cloudwatch role
+		_, err = iam.NewRolePolicyAttachment(ctx, nameTags.cloudwatchAgentPolicyName, &iam.RolePolicyAttachmentArgs{
+			Role:      role.Name,
+			PolicyArn: pulumi.String("arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"),
+		})
+		if err != nil {
+			return err
+		}
+
+		ec2Instance, err := ec2.NewInstance(ctx, nameTags.applicationInstanceName, &ec2.InstanceArgs{
 
 			Ami:                   pulumi.String(amiId),
 			SubnetId:              publicSubnets[0].ID(),
@@ -353,11 +441,34 @@ sudo chmod 640 %s
 					return userData, nil
 				},
 			).(pulumi.StringOutput),
+			IamInstanceProfile: instanceProfile.ID(),
 			Tags: pulumi.StringMap{
 				"Name": pulumi.String(nameTags.applicationInstanceName),
 			},
 		},
 			pulumi.DependsOn([]pulumi.Resource{databaseInstance}))
+		if err != nil {
+			return err
+		}
+
+		// Get the zone for application domain
+		zoneID, err := route53.LookupZone(ctx, &route53.LookupZoneArgs{
+			Name: pulumi.StringRef(appDomainName),
+		}, nil)
+
+		if err != nil {
+			return err
+		}
+
+		// Create a new A Record for the ec2 instance
+		_, err = route53.NewRecord(ctx, nameTags.applicationInstanceRecordName, &route53.RecordArgs{
+			Name:           pulumi.String(appDomainName),
+			Type:           pulumi.String("A"),
+			Ttl:            pulumi.Int(60),
+			ZoneId:         pulumi.String(zoneID.Id),
+			Records:        pulumi.StringArray{ec2Instance.PublicIp},
+			AllowOverwrite: pulumi.Bool(true)},
+		)
 		if err != nil {
 			return err
 		}
@@ -425,6 +536,30 @@ func getNameTags(conf *config.Config, nameTags *nameTags) {
 	if err != nil {
 		applicationInstanceName = "assessment-application-instance"
 	}
+	cloudwatchAgentRoleName, err := conf.Try("cloudwatchAgentRoleName")
+	if err != nil {
+		cloudwatchAgentRoleName = "cloudwatch-agent-role"
+	}
+	cloudwatchInstanceProfileName, err := conf.Try("cloudwatchInstanceProfileName")
+	if err != nil {
+		cloudwatchInstanceProfileName = "cloudwatch-instance-profile"
+	}
+	cloudwatchAgentPolicyName, err := conf.Try("cloudwatchAgentPolicyName")
+	if err != nil {
+		cloudwatchAgentPolicyName = "cloudwatch-agent-policy"
+	}
+	applicationInstanceRecordName, err := conf.Try("applicationInstanceRecordName")
+	if err != nil {
+		applicationInstanceRecordName = "application-instance-record"
+	}
+	applicationDatabaseEgressName, err := conf.Try("applicationDatabaseEgressName")
+	if err != nil {
+		applicationDatabaseEgressName = "application-database-egress"
+	}
+	applicationCloudwatchEgressName, err := conf.Try("applicationCloudwatchEgressName")
+	if err != nil {
+		applicationCloudwatchEgressName = "application-cloudwatch-egress"
+	}
 	nameTags.vpcName = vpcName
 	nameTags.internetGatewayName = internetGatewayName
 	nameTags.publicSubnetName = publicSubnetName
@@ -439,5 +574,11 @@ func getNameTags(conf *config.Config, nameTags *nameTags) {
 	nameTags.databaseParameterGroupName = databaseParameterGroupName
 	nameTags.databaseInstanceName = databaseInstanceName
 	nameTags.applicationInstanceName = applicationInstanceName
+	nameTags.cloudwatchAgentRoleName = cloudwatchAgentRoleName
+	nameTags.cloudwatchInstanceProfileName = cloudwatchInstanceProfileName
+	nameTags.cloudwatchAgentPolicyName = cloudwatchAgentPolicyName
+	nameTags.applicationInstanceRecordName = applicationInstanceRecordName
+	nameTags.applicationDatabaseEgressName = applicationDatabaseEgressName
+	nameTags.applicationCloudwatchEgressName = applicationCloudwatchEgressName
 	return
 }
