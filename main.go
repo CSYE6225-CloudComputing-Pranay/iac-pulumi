@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/c-robinson/iplib"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/alb"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/autoscaling"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/cloudwatch"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/iam"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/lb"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/rds"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/route53"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -37,6 +42,16 @@ type nameTags struct {
 	applicationInstanceRecordName   string
 	applicationDatabaseEgressName   string
 	applicationCloudwatchEgressName string
+	loadBalancerSecurityGroupName   string
+	targetGroupName                 string
+	ec2LaunchTemplateName           string
+	loadBalancerName                string
+	listenerName                    string
+	autoScalingGroupName            string
+	scaleUpPolicyName               string
+	scaleDownPolicyName             string
+	scaleUpAlarmName                string
+	scaleDownAlarmName              string
 }
 
 func main() {
@@ -50,8 +65,6 @@ func main() {
 
 		sshKeyName := conf.Require("sshKeyName")
 		instanceType := conf.Require("instanceType")
-		rootVolumeSize := conf.RequireInt("rootVolumeSize")
-		rootVolumeType := conf.Require("rootVolumeType")
 
 		//Fetching AWS Configuration
 		awsConf := config.New(ctx, "aws")
@@ -83,6 +96,7 @@ func main() {
 		appCloudwatchConfigFile := appConf.Require("cloudwatchConfigFile")
 		appBinaryFile := appConf.Require("binaryFile")
 		appDomainName := awsProfile + "." + appConf.Require("domainName")
+		appHealthCheckPath := appConf.Require("healthCheckPath")
 
 		var nameTags nameTags
 
@@ -92,6 +106,9 @@ func main() {
 
 		var ports []int
 		conf.RequireObject("ports", &ports)
+
+		var loadBalancerPorts []int
+		conf.RequireObject("loadBalancerPorts", &loadBalancerPorts)
 
 		parts := strings.Split(vpcCidr, "/")
 		ip := parts[0]
@@ -224,20 +241,46 @@ func main() {
 			}
 		}
 
-		// Create ingress rules for the application security group
-		var securityGroupIngressRules ec2.SecurityGroupIngressArray
+		// Create ingress rules for the load balancer security group
+		var loadBalancerSecurityGroupIngressRules ec2.SecurityGroupIngressArray
 
 		for i := range ports {
-			securityGroupIngressRules = append(securityGroupIngressRules, &ec2.SecurityGroupIngressArgs{
-				Description:    pulumi.String("TLS from VPC for port " + strconv.Itoa(ports[i])),
-				FromPort:       pulumi.Int(ports[i]),
-				ToPort:         pulumi.Int(ports[i]),
+			loadBalancerSecurityGroupIngressRules = append(loadBalancerSecurityGroupIngressRules, &ec2.SecurityGroupIngressArgs{
+				Description:    pulumi.String("TLS from VPC for port " + strconv.Itoa(loadBalancerPorts[i])),
+				FromPort:       pulumi.Int(loadBalancerPorts[i]),
+				ToPort:         pulumi.Int(loadBalancerPorts[i]),
 				Protocol:       pulumi.String("tcp"),
 				CidrBlocks:     pulumi.StringArray{pulumi.String(ipv4Cidr)},
 				Ipv6CidrBlocks: pulumi.StringArray{pulumi.String(ipv6Cidr)},
 			})
 		}
 
+		// Create load balancer security group
+		loadBalancerSecurityGroup, err := ec2.NewSecurityGroup(ctx, nameTags.loadBalancerSecurityGroupName, &ec2.SecurityGroupArgs{
+			VpcId:   vpc.ID(),
+			Ingress: loadBalancerSecurityGroupIngressRules,
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.loadBalancerSecurityGroupName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create ingress rules for the application security group
+		var securityGroupIngressRules ec2.SecurityGroupIngressArray
+
+		for i := range ports {
+			securityGroupIngressRules = append(securityGroupIngressRules, &ec2.SecurityGroupIngressArgs{
+				Description: pulumi.String("TLS from VPC for port " + strconv.Itoa(ports[i])),
+				FromPort:    pulumi.Int(ports[i]),
+				ToPort:      pulumi.Int(ports[i]),
+				Protocol:    pulumi.String("tcp"),
+				SecurityGroups: pulumi.StringArray{
+					loadBalancerSecurityGroup.ID(),
+				},
+			})
+		}
 		// Create application security group
 		securityGroup, err := ec2.NewSecurityGroup(ctx, nameTags.securityGroupName, &ec2.SecurityGroupArgs{
 			VpcId:   vpc.ID(),
@@ -283,7 +326,8 @@ func main() {
 		if err != nil {
 			return err
 		}
-		// Create egress rule for application security group to access database
+
+		// Create egress rule for application security group to access cloudwatch
 		_, err = ec2.NewSecurityGroupRule(ctx, nameTags.applicationCloudwatchEgressName, &ec2.SecurityGroupRuleArgs{
 			Type:            pulumi.String("egress"),
 			FromPort:        pulumi.Int(443),
@@ -297,15 +341,34 @@ func main() {
 			return err
 		}
 
-		// Create a string array to store the subnet ids for the db subnet group
-		var subnetIds pulumi.StringArray
+		// Create egress rule for load balancer security group to access application
+		_, err = ec2.NewSecurityGroupRule(ctx, "loadBalancer-a-egress", &ec2.SecurityGroupRuleArgs{
+			Type:                  pulumi.String("egress"),
+			FromPort:              pulumi.Int(appPort),
+			ToPort:                pulumi.Int(appPort),
+			Protocol:              pulumi.String("tcp"),
+			SecurityGroupId:       loadBalancerSecurityGroup.ID(),
+			SourceSecurityGroupId: securityGroup.ID(),
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a string array to store the subnet ids for the private subnet group
+		var privateSubnetIds pulumi.StringArray
 		for i := range privateSubnets {
-			subnetIds = append(subnetIds, privateSubnets[i].ID())
+			privateSubnetIds = append(privateSubnetIds, privateSubnets[i].ID())
+		}
+
+		// Create a string array to store the subnet ids for the public subnet group
+		var publicSubnetIds pulumi.StringArray
+		for i := range publicSubnets {
+			publicSubnetIds = append(publicSubnetIds, publicSubnets[i].ID())
 		}
 
 		// Create a database subnet group
 		databaseSubnetGroup, err := rds.NewSubnetGroup(ctx, nameTags.databaseSubnetGroupName, &rds.SubnetGroupArgs{
-			SubnetIds: subnetIds,
+			SubnetIds: privateSubnetIds,
 			Tags: pulumi.StringMap{
 				"Name": pulumi.String(nameTags.databaseSubnetGroupName),
 			},
@@ -422,31 +485,169 @@ sudo chmod 640 %s
 			return err
 		}
 
-		ec2Instance, err := ec2.NewInstance(ctx, nameTags.applicationInstanceName, &ec2.InstanceArgs{
-
-			Ami:                   pulumi.String(amiId),
-			SubnetId:              publicSubnets[0].ID(),
+		// Create an ec2 launch template
+		ec2LaunchTemplate, err := ec2.NewLaunchTemplate(ctx, nameTags.ec2LaunchTemplateName, &ec2.LaunchTemplateArgs{
+			Name:                  pulumi.String(nameTags.ec2LaunchTemplateName),
+			ImageId:               pulumi.String(amiId),
+			InstanceType:          pulumi.String(instanceType),
 			KeyName:               pulumi.String(sshKeyName),
 			DisableApiTermination: pulumi.Bool(false),
-			InstanceType:          pulumi.String(instanceType),
-			RootBlockDevice: &ec2.InstanceRootBlockDeviceArgs{
-				VolumeSize: pulumi.Int(rootVolumeSize),
-				VolumeType: pulumi.String(rootVolumeType),
-			},
-			VpcSecurityGroupIds: pulumi.StringArray{securityGroup.ID()},
+			VpcSecurityGroupIds:   pulumi.StringArray{securityGroup.ID()},
 			UserData: databaseInstance.Address.ApplyT(
 				func(args interface{}) (string, error) {
 					endpoint := args.(string)
 					userData = strings.Replace(userData, "${DB_HOST}", endpoint, -1)
-					return userData, nil
+					encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
+					return encodedUserData, nil
 				},
 			).(pulumi.StringOutput),
-			IamInstanceProfile: instanceProfile.ID(),
+			IamInstanceProfile: &ec2.LaunchTemplateIamInstanceProfileArgs{
+				Name: instanceProfile.Name,
+			},
 			Tags: pulumi.StringMap{
-				"Name": pulumi.String(nameTags.applicationInstanceName),
+				"Name": pulumi.String(nameTags.ec2LaunchTemplateName),
 			},
 		},
 			pulumi.DependsOn([]pulumi.Resource{databaseInstance}))
+		if err != nil {
+			return err
+		}
+
+		// Create a Target Group
+		targetGroup, err := alb.NewTargetGroup(ctx, nameTags.targetGroupName, &alb.TargetGroupArgs{
+			Port:       pulumi.Int(appPort),
+			Protocol:   pulumi.String("HTTP"),
+			TargetType: pulumi.String("instance"),
+			VpcId:      vpc.ID(),
+			HealthCheck: &alb.TargetGroupHealthCheckArgs{
+				Enabled:  pulumi.Bool(true),
+				Interval: pulumi.Int(60),
+				Path:     pulumi.String(appHealthCheckPath),
+				Port:     pulumi.String(strconv.Itoa(appPort)),
+				Protocol: pulumi.String("HTTP"),
+				Timeout:  pulumi.Int(5),
+			},
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.targetGroupName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		autoScalingGroup, err := autoscaling.NewGroup(ctx, nameTags.autoScalingGroupName, &autoscaling.GroupArgs{
+			VpcZoneIdentifiers:     publicSubnetIds,
+			DesiredCapacity:        pulumi.Int(1),
+			MaxSize:                pulumi.Int(3),
+			MinSize:                pulumi.Int(1),
+			DefaultCooldown:        pulumi.Int(60),
+			HealthCheckType:        pulumi.String("ELB"),
+			HealthCheckGracePeriod: pulumi.Int(10),
+			LaunchTemplate: &autoscaling.GroupLaunchTemplateArgs{
+				Id:      ec2LaunchTemplate.ID(),
+				Version: pulumi.String("$Latest"),
+			},
+			TargetGroupArns: pulumi.StringArray{targetGroup.Arn},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create scale up policy
+		scaleUpPolicy, err := autoscaling.NewPolicy(ctx, nameTags.scaleUpPolicyName, &autoscaling.PolicyArgs{
+			AdjustmentType:        pulumi.String("ChangeInCapacity"),
+			ScalingAdjustment:     pulumi.Int(1),
+			MetricAggregationType: pulumi.String("Average"),
+			PolicyType:            pulumi.String("SimpleScaling"),
+			AutoscalingGroupName:  autoScalingGroup.Name,
+		})
+		if err != nil {
+			return err
+		}
+
+		//Create scale down policy
+		scaleDownPolicy, err := autoscaling.NewPolicy(ctx, nameTags.scaleDownPolicyName, &autoscaling.PolicyArgs{
+			AdjustmentType:        pulumi.String("ChangeInCapacity"),
+			ScalingAdjustment:     pulumi.Int(-1),
+			MetricAggregationType: pulumi.String("Average"),
+			PolicyType:            pulumi.String("SimpleScaling"),
+			AutoscalingGroupName:  autoScalingGroup.Name,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a CloudWatch Alarm
+		_, err = cloudwatch.NewMetricAlarm(ctx, nameTags.scaleUpAlarmName, &cloudwatch.MetricAlarmArgs{
+			AlarmDescription:   pulumi.String("Request for the AutoScaling Alarm"),
+			EvaluationPeriods:  pulumi.Int(2),
+			MetricName:         pulumi.String("CPUUtilization"),
+			Namespace:          pulumi.String("AWS/EC2"),
+			Period:             pulumi.Int(120),
+			Statistic:          pulumi.String("Average"),
+			Threshold:          pulumi.Float64(5),
+			ComparisonOperator: pulumi.String("GreaterThanThreshold"),
+			Dimensions: pulumi.StringMap{
+				"AutoScalingGroupName": autoScalingGroup.Name,
+			},
+			AlarmActions: pulumi.Array{
+				scaleUpPolicy.Arn,
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a CloudWatch Alarm
+		_, err = cloudwatch.NewMetricAlarm(ctx, nameTags.scaleDownAlarmName, &cloudwatch.MetricAlarmArgs{
+			AlarmDescription:   pulumi.String("Request for the AutoScaling Alarm"),
+			EvaluationPeriods:  pulumi.Int(2),
+			MetricName:         pulumi.String("CPUUtilization"),
+			Namespace:          pulumi.String("AWS/EC2"),
+			Period:             pulumi.Int(120),
+			Statistic:          pulumi.String("Average"),
+			Threshold:          pulumi.Float64(3),
+			ComparisonOperator: pulumi.String("LessThanThreshold"),
+			Dimensions: pulumi.StringMap{
+				"AutoScalingGroupName": autoScalingGroup.Name,
+			},
+			AlarmActions: pulumi.Array{
+				scaleDownPolicy.Arn,
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		//Create a Load Balancer
+		loadBalancer, err := lb.NewLoadBalancer(ctx, nameTags.loadBalancerName, &lb.LoadBalancerArgs{
+			Internal:                 pulumi.Bool(false),
+			LoadBalancerType:         pulumi.String("application"),
+			Subnets:                  publicSubnetIds,
+			SecurityGroups:           pulumi.StringArray{loadBalancerSecurityGroup.ID()},
+			EnableDeletionProtection: pulumi.Bool(false),
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.loadBalancerName),
+			},
+		})
+		if err != nil {
+			return err
+		}
+		//Create a Load Balancer Listener
+		_, err = alb.NewListener(ctx, nameTags.listenerName, &alb.ListenerArgs{
+			DefaultActions: alb.ListenerDefaultActionArray{
+				&alb.ListenerDefaultActionArgs{
+					Type:           pulumi.String("forward"),
+					TargetGroupArn: targetGroup.Arn,
+				},
+			},
+			LoadBalancerArn: loadBalancer.Arn,
+			Port:            pulumi.Int(80),
+			Protocol:        pulumi.String("HTTP"),
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String(nameTags.listenerName),
+			},
+		}, pulumi.DependsOn([]pulumi.Resource{loadBalancer}))
 		if err != nil {
 			return err
 		}
@@ -462,13 +663,18 @@ sudo chmod 640 %s
 
 		// Create a new A Record for the ec2 instance
 		_, err = route53.NewRecord(ctx, nameTags.applicationInstanceRecordName, &route53.RecordArgs{
-			Name:           pulumi.String(appDomainName),
-			Type:           pulumi.String("A"),
-			Ttl:            pulumi.Int(60),
-			ZoneId:         pulumi.String(zoneID.Id),
-			Records:        pulumi.StringArray{ec2Instance.PublicIp},
+			Name:   pulumi.String(appDomainName),
+			Type:   pulumi.String("A"),
+			ZoneId: pulumi.String(zoneID.Id),
+			Aliases: route53.RecordAliasArray{
+				&route53.RecordAliasArgs{
+					EvaluateTargetHealth: pulumi.Bool(true),
+					Name:                 loadBalancer.DnsName,
+					ZoneId:               loadBalancer.ZoneId,
+				},
+			},
 			AllowOverwrite: pulumi.Bool(true)},
-		)
+			pulumi.DependsOn([]pulumi.Resource{loadBalancer}))
 		if err != nil {
 			return err
 		}
@@ -560,6 +766,46 @@ func getNameTags(conf *config.Config, nameTags *nameTags) {
 	if err != nil {
 		applicationCloudwatchEgressName = "application-cloudwatch-egress"
 	}
+	loadBalancerSecurityGroupName, err := conf.Try("loadBalancerSecurityGroupName")
+	if err != nil {
+		loadBalancerSecurityGroupName = "load-balancer-security-group"
+	}
+	ec2LaunchTemplateName, err := conf.Try("ec2LaunchTemplateName")
+	if err != nil {
+		ec2LaunchTemplateName = "csye6225_asg"
+	}
+	loadBalancerName, err := conf.Try("loadBalancerName")
+	if err != nil {
+		loadBalancerName = "load-balancer"
+	}
+	listenerName, err := conf.Try("listenerName")
+	if err != nil {
+		listenerName = "listener"
+	}
+	autoScalingGroupName, err := conf.Try("autoScalingGroupName")
+	if err != nil {
+		autoScalingGroupName = "auto-scaling-group"
+	}
+	scaleUpPolicyName, err := conf.Try("scaleUpPolicyName")
+	if err != nil {
+		scaleUpPolicyName = "scale-up-policy"
+	}
+	scaleDownPolicyName, err := conf.Try("scaleDownPolicyName")
+	if err != nil {
+		scaleDownPolicyName = "scale-down-policy"
+	}
+	scaleUpAlarmName, err := conf.Try("scaleUpAlarmName")
+	if err != nil {
+		scaleUpAlarmName = "scale-up-alarm"
+	}
+	scaleDownAlarmName, err := conf.Try("scaleDownAlarmName")
+	if err != nil {
+		scaleDownAlarmName = "scale-down-alarm"
+	}
+	targetGroupName, err := conf.Try("targetGroupName")
+	if err != nil {
+		targetGroupName = "target-group"
+	}
 	nameTags.vpcName = vpcName
 	nameTags.internetGatewayName = internetGatewayName
 	nameTags.publicSubnetName = publicSubnetName
@@ -580,5 +826,15 @@ func getNameTags(conf *config.Config, nameTags *nameTags) {
 	nameTags.applicationInstanceRecordName = applicationInstanceRecordName
 	nameTags.applicationDatabaseEgressName = applicationDatabaseEgressName
 	nameTags.applicationCloudwatchEgressName = applicationCloudwatchEgressName
+	nameTags.loadBalancerSecurityGroupName = loadBalancerSecurityGroupName
+	nameTags.ec2LaunchTemplateName = ec2LaunchTemplateName
+	nameTags.loadBalancerName = loadBalancerName
+	nameTags.listenerName = listenerName
+	nameTags.autoScalingGroupName = autoScalingGroupName
+	nameTags.scaleUpPolicyName = scaleUpPolicyName
+	nameTags.scaleDownPolicyName = scaleDownPolicyName
+	nameTags.scaleUpAlarmName = scaleUpAlarmName
+	nameTags.scaleDownAlarmName = scaleDownAlarmName
+	nameTags.targetGroupName = targetGroupName
 	return
 }

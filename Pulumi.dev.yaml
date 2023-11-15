@@ -5,16 +5,17 @@ config:
   vpcCidr: 10.0.0.0/16
   ipv4Cidr: 0.0.0.0/0
   ipv6Cidr: ::/0
-  amiId: "ami-085316982fafbdab9"
+  amiId: "ami-0a793a997031d4a16"
   sshKeyName: "demo_ssh_key"
   instanceType: "t2.micro"
   rootVolumeSize: 25
   rootVolumeType: "gp2"
   ports:
     - 22
+    - 8080
+  loadBalancerPorts:
     - 80
     - 443
-    - 8080
 
   # Application properties
   application:user: webapp
@@ -26,6 +27,7 @@ config:
   application:propertyFile: /opt/app/.env
   application:binaryFile: /opt/app/assessment-application
   application:domainName: pranaykasavaraju.me
+  application:healthCheckPath: /healthz
 
   # Database properties
   database:family: mariadb10.11
