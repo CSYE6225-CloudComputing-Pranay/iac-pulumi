@@ -380,6 +380,12 @@ func main() {
 		// Create a database parameter group
 		databaseParameterGroup, err := rds.NewParameterGroup(ctx, nameTags.databaseParameterGroupName, &rds.ParameterGroupArgs{
 			Family: pulumi.String(dbFamily),
+			Parameters: &rds.ParameterGroupParameterArray{
+				&rds.ParameterGroupParameterArgs{
+					Name:  pulumi.String("max_user_connections"),
+					Value: pulumi.String("5000"),
+				},
+			},
 			Tags: pulumi.StringMap{
 				"Name": pulumi.String(nameTags.databaseParameterGroupName),
 			},
