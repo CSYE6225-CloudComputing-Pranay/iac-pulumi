@@ -9,11 +9,16 @@ import (
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/alb"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/autoscaling"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/cloudwatch"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/dynamodb"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/iam"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/lambda"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/lb"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/rds"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/route53"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/sns"
+	"github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/serviceaccount"
+	"github.com/pulumi/pulumi-gcp/sdk/v6/go/gcp/storage"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
 	"net"
@@ -97,6 +102,8 @@ func main() {
 		appBinaryFile := appConf.Require("binaryFile")
 		appDomainName := awsProfile + "." + appConf.Require("domainName")
 		appHealthCheckPath := appConf.Require("healthCheckPath")
+		appGcpProject := appConf.Require("gcpProject")
+		path := conf.Require("path")
 
 		var nameTags nameTags
 
@@ -380,12 +387,6 @@ func main() {
 		// Create a database parameter group
 		databaseParameterGroup, err := rds.NewParameterGroup(ctx, nameTags.databaseParameterGroupName, &rds.ParameterGroupArgs{
 			Family: pulumi.String(dbFamily),
-			Parameters: &rds.ParameterGroupParameterArray{
-				&rds.ParameterGroupParameterArgs{
-					Name:  pulumi.String("max_user_connections"),
-					Value: pulumi.String("5000"),
-				},
-			},
 			Tags: pulumi.StringMap{
 				"Name": pulumi.String(nameTags.databaseParameterGroupName),
 			},
@@ -427,6 +428,8 @@ func main() {
 	echo "PORT=%d"
 	echo "FILE_PATH=%s"
 	echo "LOG_FILE_PATH=%s"
+	echo "SUBMISSION_TOPIC_ARN=${SUBMISSION_TOPIC_ARN}"
+	echo "AWS_REGION=us-east-1"
 } >> %s
 sudo chown %s:%s %s
 sudo chown %s:%s %s
@@ -486,6 +489,15 @@ sudo chmod 640 %s
 		_, err = iam.NewRolePolicyAttachment(ctx, nameTags.cloudwatchAgentPolicyName, &iam.RolePolicyAttachmentArgs{
 			Role:      role.Name,
 			PolicyArn: pulumi.String("arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"),
+		})
+		if err != nil {
+			return err
+		}
+
+		// Attach the SNS policy to the cloudwatch role
+		_, err = iam.NewRolePolicyAttachment(ctx, "SNS-policy", &iam.RolePolicyAttachmentArgs{
+			Role:      role.Name,
+			PolicyArn: pulumi.String("arn:aws:iam::aws:policy/AmazonSNSFullAccess"),
 		})
 		if err != nil {
 			return err
@@ -681,6 +693,177 @@ sudo chmod 640 %s
 			},
 			AllowOverwrite: pulumi.Bool(true)},
 			pulumi.DependsOn([]pulumi.Resource{loadBalancer}))
+		if err != nil {
+			return err
+		}
+
+		// Create a SNS Topic
+		topic, err := sns.NewTopic(ctx, "userUpdates", &sns.TopicArgs{})
+		if err != nil {
+			return err
+		}
+		topic.Arn.ApplyT(
+			func(args interface{}) (string, error) {
+				arn := args.(string)
+				userData = strings.Replace(userData, "${SUBMISSION_TOPIC_ARN}", arn, -1)
+				return arn, nil
+			})
+		//userData = strings.Replace(userData, "${SUBMISSION_TOPIC_ARN}", topicName, -1)
+		// Create a DynamoDB Table
+		table, err := dynamodb.NewTable(ctx, "Table", &dynamodb.TableArgs{
+			Attributes: dynamodb.TableAttributeArray{
+				&dynamodb.TableAttributeArgs{
+					Name: pulumi.String("Id"),
+					Type: pulumi.String("S"),
+				},
+			},
+			HashKey:       pulumi.String("Id"),
+			ReadCapacity:  pulumi.Int(5),
+			WriteCapacity: pulumi.Int(5),
+		})
+		if err != nil {
+			return err
+		}
+		//Create a Google Cloud Storage Bucket
+		bucket, err := storage.NewBucket(ctx, "Pranay_Bucket", &storage.BucketArgs{
+			Location:               pulumi.String("US"),
+			Name:                   pulumi.String("pranay-bucket-csye6225"),
+			Project:                pulumi.String(appGcpProject),
+			StorageClass:           pulumi.String("STANDARD"),
+			PublicAccessPrevention: pulumi.String("enforced"),
+		})
+		if err != nil {
+			return err
+		}
+
+		//Create a Service Account for Bucket
+		serviceAccount, err := serviceaccount.NewAccount(ctx, "My-Account", &serviceaccount.AccountArgs{
+			AccountId:   pulumi.String("service-account-id"),
+			DisplayName: pulumi.String("My-Account"),
+			Project:     pulumi.String(appGcpProject),
+		})
+		if err != nil {
+			return err
+		}
+		//Create Access Keys
+		accessKey, err := serviceaccount.NewKey(ctx, "My-Key", &serviceaccount.KeyArgs{
+			ServiceAccountId: serviceAccount.Name,
+			PublicKeyType:    pulumi.String("TYPE_X509_PEM_FILE"),
+		})
+
+		// Create Access Grant for the Bucket to the Service Account
+		_, err = storage.NewBucketIAMMember(ctx, "My-Bucket-Binding", &storage.BucketIAMMemberArgs{
+			Bucket: bucket.Name,
+			Role:   pulumi.String("roles/storage.admin"),
+			Member: serviceAccount.Member,
+		})
+		if err != nil {
+			return err
+		}
+		//Create a Role for Lambda
+		lambdaRole, err := iam.NewRole(ctx, "lambdaRole", &iam.RoleArgs{
+			AssumeRolePolicy: pulumi.String(`{
+				"Version": "2012-10-17",
+				"Statement": [
+					{
+					"Action": "sts:AssumeRole",
+					"Principal": {
+						"Service": "lambda.amazonaws.com"
+					},
+					"Effect": "Allow",
+					"Sid": ""
+					}
+				]
+				}`),
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a new Lambda Role Policy Attachment
+		_, err = iam.NewRolePolicyAttachment(ctx, "lambdaRolePolicyAttachment", &iam.RolePolicyAttachmentArgs{
+			Role:      lambdaRole.Name,
+			PolicyArn: pulumi.String("arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"),
+		})
+		if err != nil {
+			return err
+		}
+
+		dynamodb_policy_document, err := iam.GetPolicyDocument(ctx, &iam.GetPolicyDocumentArgs{
+			Statements: []iam.GetPolicyDocumentStatement{
+				{
+					Effect: pulumi.StringRef("Allow"),
+					Actions: []string{
+						"dynamodb:GetItem",
+						"dynamodb:PutItem",
+						"dynamodb:UpdateItem",
+						"dynamodb:DeleteItem",
+						"dynamodb:Scan",
+						"dynamodb:Query",
+					},
+					Resources: []string{
+						"arn:aws:dynamodb:*:*:table/*",
+					},
+				},
+			},
+		}, nil)
+		if err != nil {
+			return err
+		}
+
+		dynamodb_policy, err := iam.NewPolicy(ctx, "dynamodb-policy", &iam.PolicyArgs{
+			Path:        pulumi.String("/"),
+			Description: pulumi.String("IAM policy for dynamodb"),
+			Policy:      pulumi.String(dynamodb_policy_document.Json),
+		})
+		if err != nil {
+			return err
+		}
+
+		_, err = iam.NewRolePolicyAttachment(ctx, "dynamodb-policy-attachment", &iam.RolePolicyAttachmentArgs{
+			Role:      lambdaRole.Name,
+			PolicyArn: dynamodb_policy.Arn,
+		}, pulumi.DependsOn([]pulumi.Resource{
+			lambdaRole,
+			dynamodb_policy,
+		}))
+		if err != nil {
+			return err
+		}
+
+		// Create a new Lambda Function
+		function, err := lambda.NewFunction(ctx, "Lambda_Function", &lambda.FunctionArgs{
+			Code:    pulumi.NewFileArchive(path),
+			Handler: pulumi.String("lambda.lambda_handler"),
+			Runtime: pulumi.String("python3.11"),
+			Role:    lambdaRole.Arn,
+			Timeout: pulumi.Int(15),
+			Environment: &lambda.FunctionEnvironmentArgs{
+				Variables: pulumi.StringMap{
+					"GOOGLE_CREDENTIALS": accessKey.PrivateKey,
+					"FROM_ADDRESS":       "mailgun@" + pulumi.String(appDomainName),
+					"GCP_BUCKET_NAME":    bucket.Name,
+					"DYNAMO_TABLE_NAME":  table.Name,
+				},
+			},
+		})
+
+		// Create a Trigger to lambda from SNS
+		_, err = lambda.NewPermission(ctx, "lambda_permission", &lambda.PermissionArgs{
+			Action:    pulumi.String("lambda:InvokeFunction"),
+			Function:  function.Name, // replace `lambda_function` with your Lambda Function resource
+			Principal: pulumi.String("sns.amazonaws.com"),
+			SourceArn: topic.Arn, // replace `sns_topic` with your SNS Topic resource
+		})
+		if err != nil {
+			return err
+		}
+		// SNS Topic Subscription
+		_, err = sns.NewTopicSubscription(ctx, "lambdaSubscription", &sns.TopicSubscriptionArgs{
+			Topic:    topic.Arn,
+			Protocol: pulumi.String("lambda"),
+			Endpoint: function.Arn,
+		})
 		if err != nil {
 			return err
 		}

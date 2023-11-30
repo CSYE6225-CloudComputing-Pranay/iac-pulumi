@@ -1,42 +1,42 @@
 config:
-  aws:profile: demo
-  aws:region: us-east-1
-
-  vpcCidr: 10.0.0.0/16
-  ipv4Cidr: 0.0.0.0/0
-  ipv6Cidr: ::/0
-  amiId: "ami-0a793a997031d4a16"
-  sshKeyName: "demo_ssh_key"
-  instanceType: "t2.micro"
-  rootVolumeSize: 25
-  rootVolumeType: "gp2"
-  ports:
-    - 22
-    - 8080
-  loadBalancerPorts:
-    - 80
-    - 443
-
+  application:binaryFile: /opt/app/assessment-application
+  application:cloudwatchConfigFile: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+  application:domainName: pranaykasavaraju.me
+  application:healthCheckPath: /healthz
+  application:logFile: /var/log/webapp/assessment-application.log
+  application:port: "8080"
+  application:propertyFile: /opt/app/.env
+  application:resourceFile: /opt/users.csv
   # Application properties
   application:user: webapp
   application:userGroup: csye6225
-  application:port: 8080
-  application:resourceFile: /opt/users.csv
-  application:logFile: /var/log/webapp/assessment-application.log
-  application:cloudwatchConfigFile: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-  application:propertyFile: /opt/app/.env
-  application:binaryFile: /opt/app/assessment-application
-  application:domainName: pranaykasavaraju.me
-  application:healthCheckPath: /healthz
-
-  # Database properties
-  database:family: mariadb10.11
-  database:storageSize: 20
+  application:gcpProject: csye6225-demo-406404
+  aws:profile: demo
+  aws:region: us-east-1
   database:engine: mariadb
   database:engineVersion: 10.11.5
+  # Database properties
+  database:family: mariadb10.11
   database:instanceClass: db.t3.micro
-  database:name: cloud
-  database:masterUser: csye6225
   database:masterPassword: YH11X9S92f364UJsbzuW
-  database:port: 3306
+  database:masterUser: csye6225
+  database:name: cloud
+  database:port: "3306"
+  database:storageSize: "20"
   database:version: 10.11.5
+  gcp:project: csye6225-demo
+  iac-pulumi:amiId: ami-076ad558c2101f381
+  iac-pulumi:instanceType: t2.micro
+  iac-pulumi:ipv4Cidr: 0.0.0.0/0
+  iac-pulumi:ipv6Cidr: ::/0
+  iac-pulumi:loadBalancerPorts:
+    - 80
+    - 443
+  iac-pulumi:path: /Users/pranay/IdeaProjects/serverless/deployment-packages.zip
+  iac-pulumi:ports:
+    - 22
+    - 8080
+  iac-pulumi:rootVolumeSize: "25"
+  iac-pulumi:rootVolumeType: gp2
+  iac-pulumi:sshKeyName: demo_ssh_key
+  iac-pulumi:vpcCidr: 10.0.0.0/16
