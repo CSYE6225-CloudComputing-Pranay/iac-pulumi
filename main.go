@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/c-robinson/iplib"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/acm"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/alb"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/autoscaling"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/cloudwatch"
@@ -57,6 +58,16 @@ type nameTags struct {
 	scaleDownPolicyName             string
 	scaleUpAlarmName                string
 	scaleDownAlarmName              string
+	dynamoDBName                    string
+	dynamoDBPolicyName              string
+	dynamoDBPolicyAttachmentName    string
+	bucketName                      string
+	topicName                       string
+	lambdaFunctionName              string
+	lambdaFunctionPermissionName    string
+	serviceAccountName              string
+	serviceAccountId                string
+	serviceAccountKeyName           string
 }
 
 func main() {
@@ -554,6 +565,7 @@ sudo chmod 640 %s
 		}
 
 		autoScalingGroup, err := autoscaling.NewGroup(ctx, nameTags.autoScalingGroupName, &autoscaling.GroupArgs{
+			Name:                   pulumi.String(nameTags.autoScalingGroupName),
 			VpcZoneIdentifiers:     publicSubnetIds,
 			DesiredCapacity:        pulumi.Int(1),
 			MaxSize:                pulumi.Int(3),
@@ -564,6 +576,13 @@ sudo chmod 640 %s
 			LaunchTemplate: &autoscaling.GroupLaunchTemplateArgs{
 				Id:      ec2LaunchTemplate.ID(),
 				Version: pulumi.String("$Latest"),
+			},
+			Tags: autoscaling.GroupTagArray{
+				&autoscaling.GroupTagArgs{
+					Key:               pulumi.String("Name"),
+					Value:             pulumi.String(nameTags.applicationInstanceName),
+					PropagateAtLaunch: pulumi.Bool(true),
+				},
 			},
 			TargetGroupArns: pulumi.StringArray{targetGroup.Arn},
 		})
@@ -648,6 +667,15 @@ sudo chmod 640 %s
 				"Name": pulumi.String(nameTags.loadBalancerName),
 			},
 		})
+
+		// Lookup for the certificate
+		certificate, err := acm.LookupCertificate(ctx, &acm.LookupCertificateArgs{
+			Domain: appDomainName,
+			Statuses: []string{
+				"ISSUED",
+			},
+		})
+
 		if err != nil {
 			return err
 		}
@@ -660,8 +688,9 @@ sudo chmod 640 %s
 				},
 			},
 			LoadBalancerArn: loadBalancer.Arn,
-			Port:            pulumi.Int(80),
-			Protocol:        pulumi.String("HTTP"),
+			CertificateArn:  pulumi.String(certificate.Arn),
+			Port:            pulumi.Int(443),
+			Protocol:        pulumi.String("HTTPS"),
 			Tags: pulumi.StringMap{
 				"Name": pulumi.String(nameTags.listenerName),
 			},
@@ -698,7 +727,7 @@ sudo chmod 640 %s
 		}
 
 		// Create a SNS Topic
-		topic, err := sns.NewTopic(ctx, "userUpdates", &sns.TopicArgs{})
+		topic, err := sns.NewTopic(ctx, nameTags.topicName, &sns.TopicArgs{})
 		if err != nil {
 			return err
 		}
@@ -708,9 +737,9 @@ sudo chmod 640 %s
 				userData = strings.Replace(userData, "${SUBMISSION_TOPIC_ARN}", arn, -1)
 				return arn, nil
 			})
-		//userData = strings.Replace(userData, "${SUBMISSION_TOPIC_ARN}", topicName, -1)
+
 		// Create a DynamoDB Table
-		table, err := dynamodb.NewTable(ctx, "Table", &dynamodb.TableArgs{
+		table, err := dynamodb.NewTable(ctx, nameTags.dynamoDBName, &dynamodb.TableArgs{
 			Attributes: dynamodb.TableAttributeArray{
 				&dynamodb.TableAttributeArgs{
 					Name: pulumi.String("Id"),
@@ -725,9 +754,9 @@ sudo chmod 640 %s
 			return err
 		}
 		//Create a Google Cloud Storage Bucket
-		bucket, err := storage.NewBucket(ctx, "Pranay_Bucket", &storage.BucketArgs{
+		bucket, err := storage.NewBucket(ctx, nameTags.bucketName, &storage.BucketArgs{
 			Location:               pulumi.String("US"),
-			Name:                   pulumi.String("pranay-bucket-csye6225"),
+			Name:                   pulumi.String(nameTags.bucketName),
 			Project:                pulumi.String(appGcpProject),
 			StorageClass:           pulumi.String("STANDARD"),
 			PublicAccessPrevention: pulumi.String("enforced"),
@@ -737,16 +766,16 @@ sudo chmod 640 %s
 		}
 
 		//Create a Service Account for Bucket
-		serviceAccount, err := serviceaccount.NewAccount(ctx, "My-Account", &serviceaccount.AccountArgs{
-			AccountId:   pulumi.String("service-account-id"),
-			DisplayName: pulumi.String("My-Account"),
+		serviceAccount, err := serviceaccount.NewAccount(ctx, nameTags.serviceAccountName, &serviceaccount.AccountArgs{
+			AccountId:   pulumi.String(nameTags.serviceAccountId),
+			DisplayName: pulumi.String(nameTags.serviceAccountName),
 			Project:     pulumi.String(appGcpProject),
 		})
 		if err != nil {
 			return err
 		}
 		//Create Access Keys
-		accessKey, err := serviceaccount.NewKey(ctx, "My-Key", &serviceaccount.KeyArgs{
+		accessKey, err := serviceaccount.NewKey(ctx, nameTags.serviceAccountKeyName, &serviceaccount.KeyArgs{
 			ServiceAccountId: serviceAccount.Name,
 			PublicKeyType:    pulumi.String("TYPE_X509_PEM_FILE"),
 		})
@@ -789,7 +818,7 @@ sudo chmod 640 %s
 			return err
 		}
 
-		dynamodb_policy_document, err := iam.GetPolicyDocument(ctx, &iam.GetPolicyDocumentArgs{
+		dynamodbPolicyDocument, err := iam.GetPolicyDocument(ctx, &iam.GetPolicyDocumentArgs{
 			Statements: []iam.GetPolicyDocumentStatement{
 				{
 					Effect: pulumi.StringRef("Allow"),
@@ -811,28 +840,28 @@ sudo chmod 640 %s
 			return err
 		}
 
-		dynamodb_policy, err := iam.NewPolicy(ctx, "dynamodb-policy", &iam.PolicyArgs{
+		dynamodbPolicy, err := iam.NewPolicy(ctx, nameTags.dynamoDBPolicyName, &iam.PolicyArgs{
 			Path:        pulumi.String("/"),
 			Description: pulumi.String("IAM policy for dynamodb"),
-			Policy:      pulumi.String(dynamodb_policy_document.Json),
+			Policy:      pulumi.String(dynamodbPolicyDocument.Json),
 		})
 		if err != nil {
 			return err
 		}
 
-		_, err = iam.NewRolePolicyAttachment(ctx, "dynamodb-policy-attachment", &iam.RolePolicyAttachmentArgs{
+		_, err = iam.NewRolePolicyAttachment(ctx, nameTags.dynamoDBPolicyAttachmentName, &iam.RolePolicyAttachmentArgs{
 			Role:      lambdaRole.Name,
-			PolicyArn: dynamodb_policy.Arn,
+			PolicyArn: dynamodbPolicy.Arn,
 		}, pulumi.DependsOn([]pulumi.Resource{
 			lambdaRole,
-			dynamodb_policy,
+			dynamodbPolicy,
 		}))
 		if err != nil {
 			return err
 		}
 
 		// Create a new Lambda Function
-		function, err := lambda.NewFunction(ctx, "Lambda_Function", &lambda.FunctionArgs{
+		function, err := lambda.NewFunction(ctx, nameTags.lambdaFunctionName, &lambda.FunctionArgs{
 			Code:    pulumi.NewFileArchive(path),
 			Handler: pulumi.String("lambda.lambda_handler"),
 			Runtime: pulumi.String("python3.11"),
@@ -849,7 +878,7 @@ sudo chmod 640 %s
 		})
 
 		// Create a Trigger to lambda from SNS
-		_, err = lambda.NewPermission(ctx, "lambda_permission", &lambda.PermissionArgs{
+		_, err = lambda.NewPermission(ctx, nameTags.lambdaFunctionPermissionName, &lambda.PermissionArgs{
 			Action:    pulumi.String("lambda:InvokeFunction"),
 			Function:  function.Name, // replace `lambda_function` with your Lambda Function resource
 			Principal: pulumi.String("sns.amazonaws.com"),
@@ -995,6 +1024,46 @@ func getNameTags(conf *config.Config, nameTags *nameTags) {
 	if err != nil {
 		targetGroupName = "target-group"
 	}
+	dynamoDBName, err := conf.Try("dynamoDBName")
+	if err != nil {
+		dynamoDBName = "Submission-table"
+	}
+	bucketName, err := conf.Try("bucketName")
+	if err != nil {
+		bucketName = "pranay-bucket-csye6225"
+	}
+	topicName, err := conf.Try("topicName")
+	if err != nil {
+		topicName = "assessment-application-topic"
+	}
+	lambdaFunctionName, err := conf.Try("lambdaFunctionName")
+	if err != nil {
+		lambdaFunctionName = "assessment-application-lambda"
+	}
+	dynamoDBPolicyName, err := conf.Try("dynamoDBPolicyName")
+	if err != nil {
+		dynamoDBPolicyName = "dynamodb-policy"
+	}
+	dynamoDBPolicyAttachmentName, err := conf.Try("dynamoDBPolicyAttachmentName")
+	if err != nil {
+		dynamoDBPolicyAttachmentName = "dynamodb-policy-attachment"
+	}
+	lambdaFunctionPermissionName, err := conf.Try("lambdaFunctionPermissionName")
+	if err != nil {
+		lambdaFunctionPermissionName = "lambda-function-permission"
+	}
+	serviceAccountName, err := conf.Try("serviceAccountName")
+	if err != nil {
+		serviceAccountName = "assessment-application-service-account"
+	}
+	serviceAccountId, err := conf.Try("serviceAccountId")
+	if err != nil {
+		serviceAccountId = "service-account-id"
+	}
+	serviceAccountKeyName, err := conf.Try("serviceAccountKeyName")
+	if err != nil {
+		serviceAccountKeyName = "assessment-application-service-account-key"
+	}
 	nameTags.vpcName = vpcName
 	nameTags.internetGatewayName = internetGatewayName
 	nameTags.publicSubnetName = publicSubnetName
@@ -1025,5 +1094,15 @@ func getNameTags(conf *config.Config, nameTags *nameTags) {
 	nameTags.scaleUpAlarmName = scaleUpAlarmName
 	nameTags.scaleDownAlarmName = scaleDownAlarmName
 	nameTags.targetGroupName = targetGroupName
+	nameTags.dynamoDBName = dynamoDBName
+	nameTags.bucketName = bucketName
+	nameTags.topicName = topicName
+	nameTags.lambdaFunctionName = lambdaFunctionName
+	nameTags.dynamoDBPolicyName = dynamoDBPolicyName
+	nameTags.dynamoDBPolicyAttachmentName = dynamoDBPolicyAttachmentName
+	nameTags.lambdaFunctionPermissionName = lambdaFunctionPermissionName
+	nameTags.serviceAccountName = serviceAccountName
+	nameTags.serviceAccountId = serviceAccountId
+	nameTags.serviceAccountKeyName = serviceAccountKeyName
 	return
 }
