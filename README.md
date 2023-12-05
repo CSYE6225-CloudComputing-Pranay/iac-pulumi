@@ -31,8 +31,11 @@ config:
   aws:region: <your-aws-region>
 ```
 
-
-4. Initialize and deploy your Pulumi stack.
+4. command to import the certificate from Local to AWS Certificate Manager:
+     aws acm import-certificate --profile demo \
+     --certificate fileb://demo_pranaykasavaraju_me.crt \
+     --private-key fileb://../private.key
+5. Initialize and deploy your Pulumi stack.
 
 ```bash
 pulumi up
@@ -40,7 +43,7 @@ pulumi up
 
 Review the changes and confirm the deployment when prompted.
 
-5Pulumi will provision the specified EC2 instance within the VPC. Once the deployment is complete, you will see the EC2 instance's public IP address and other relevant information in the output.
+6. Pulumi will provision the specified EC2 instance within the VPC. Once the deployment is complete, you will see the EC2 instance's public IP address and other relevant information in the output.
 
 ## Destroying the Stack
 

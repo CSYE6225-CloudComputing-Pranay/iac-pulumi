@@ -25,7 +25,7 @@ config:
   database:storageSize: "20"
   database:version: 10.11.5
   gcp:project: csye6225-demo
-  iac-pulumi:amiId: ami-076ad558c2101f381
+  iac-pulumi:amiId: ami-08b5adbf562cc4df2
   iac-pulumi:instanceType: t2.micro
   iac-pulumi:ipv4Cidr: 0.0.0.0/0
   iac-pulumi:ipv6Cidr: ::/0
