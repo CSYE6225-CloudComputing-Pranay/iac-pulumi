@@ -116,6 +116,12 @@ func main() {
 		appGcpProject := appConf.Require("gcpProject")
 		path := conf.Require("path")
 
+		//Fetching Mailgun Configuration
+		smtpConf := config.New(ctx, "smtp")
+
+		mailgunUserName := smtpConf.Require("username")
+		mailgunSmtpKey := smtpConf.Require("key")
+
 		var nameTags nameTags
 
 		getNameTags(conf, &nameTags)
@@ -873,6 +879,8 @@ sudo chmod 640 %s
 					"FROM_ADDRESS":       "mailgun@" + pulumi.String(appDomainName),
 					"GCP_BUCKET_NAME":    bucket.Name,
 					"DYNAMO_TABLE_NAME":  table.Name,
+					"MAILGUN_USERNAME":   pulumi.String(mailgunUserName),
+					"MAILGUN_SMTP_KEY":   pulumi.String(mailgunSmtpKey),
 				},
 			},
 		})
