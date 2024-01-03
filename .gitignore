@@ -14,6 +14,9 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
+# YAML files that include secrets or passwords
+*.yaml
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
